@@ -18,7 +18,19 @@ LDLIBS   += $(shell pkg-config --libs $(PKGS))
 TARGET   := pw-mpris-visualcard-native
 SRC      := $(wildcard src/*.cpp)
 OBJ      := $(SRC:.cpp=.o)
-DEP      := $(OBJ:.o=.d)
+
+# 视频节点输出是独立库，以 git 子模块引入（见 README「从源码构建」）。
+# 源码直接编进本项目的构建树：同一套编译参数、没有 ABI 要追，也不在子模块目录里留 .o 文件。
+PWNODE_DIR  ?= lib/pw-video-simple-interface
+PWNODE_SRC  := $(wildcard $(PWNODE_DIR)/src/*.cpp)
+PWNODE_OBJ  := $(patsubst $(PWNODE_DIR)/src/%.cpp,build/pwvideo/%.o,$(PWNODE_SRC))
+CXXFLAGS    += -I$(PWNODE_DIR)/src
+OBJ         += $(PWNODE_OBJ)
+DEP         := $(OBJ:.o=.d)
+
+ifeq ($(PWNODE_SRC),)
+$(error 缺少子模块 $(PWNODE_DIR)：先执行 git submodule update --init --recursive)
+endif
 
 # systemd 用户服务：unit 是模板，@REPO@ / @ARGS@ 在安装时替换成实际值
 UNIT         := pw-mpris-visualcard.service
@@ -33,6 +45,10 @@ $(TARGET): $(OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $(OBJ) $(LDLIBS)
 
 src/%.o: src/%.cpp
+	$(CXX) $(CXXFLAGS) -MMD -MP -c -o $@ $<
+
+build/pwvideo/%.o: $(PWNODE_DIR)/src/%.cpp
+	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -MMD -MP -c -o $@ $<
 
 # 不出画面，直接渲染一张 PNG，用来调版式
@@ -60,5 +76,6 @@ uninstall-service:
 
 clean:
 	rm -f $(OBJ) $(DEP) $(TARGET)
+	rm -rf build
 
 -include $(DEP)

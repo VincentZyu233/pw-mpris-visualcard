@@ -13,7 +13,7 @@
 | 状态采样 | 播放器的 MPRIS 接口（D-Bus） | `NowPlaying` 快照：标题、歌手、专辑、进度、歌词、封面 URL | `mpris`，常驻 D-Bus 连接，不 fork 子进程 |
 | 素材获取 | 封面 URL | cairo 表面（LRU 缓存，最多 3 张） | `art`，后台线程 + libcurl + gdk-pixbuf |
 | 版面渲染 | 快照 + 封面表面 | BGRA 帧（预乘 alpha） | `card`，cairo + pango |
-| 视频输出 | BGRA 帧 | `Stream/Output/Video` 节点 | `pwvideo`，libpipewire |
+| 视频输出 | BGRA 帧 | `Stream/Output/Video` 节点 | [`pw-video-simple-interface`](https://github.com/zlinux-live-util/pw-video-simple-interface)，libpipewire |
 
 各阶段都在同一进程内通过内存传递数据，进程私有内存 6–25 MB。
 
@@ -52,7 +52,7 @@
 paru -S pw-mpris-visualcard-git     # 或 yay -S pw-mpris-visualcard-git
 ```
 
-`pw-mpris-visualcard-git` 提供并冲突于 `pw-mpris-visualcard`，支持 `x86_64` 与 `aarch64`。装出来的是 `/usr/bin/pw-mpris-visualcard-native`、`/usr/share/doc/pw-mpris-visualcard/` 下的文档，以及**已经渲染好的** systemd 用户 unit——所以第 6 步的 `make install-service` 不用执行（也不能执行，原因见该节）。构建走 `PORTABLE=1`（见第 3 步）。`obs-pwvideo` 与 CJK 字体（`noto-fonts-cjk`）列为可选依赖。
+`pw-mpris-visualcard-git` 提供并冲突于 `pw-mpris-visualcard`，支持 `x86_64` 与 `aarch64`。装出来的是 `/usr/bin/pw-mpris-visualcard-native`、`/usr/share/doc/pw-mpris-visualcard/` 下的文档，以及**已经渲染好的** systemd 用户 unit——所以第 6 步的 `make install-service` 不用执行（也不能执行，原因见该节）。构建走 `PORTABLE=1`（见第 3 步），并且把视频节点库作为第二个 source 一起拉取，因此不需要子模块检出。`obs-pwvideo` 与 CJK 字体（`noto-fonts-cjk`）列为可选依赖。
 
 作为 `-git` 包，它跟随最新提交，重新构建才会拉到新版本。
 
@@ -77,6 +77,11 @@ OBS 侧需要一个能选择任意 PipeWire 节点的插件。OBS 自带的 `lin
 make             # → ./pw-mpris-visualcard-native
 make PORTABLE=1  # 同上，但不加 -march=native（换机器运行或分发时使用）
 ```
+
+视频节点输出——节点注册、缓冲声明、帧率协商、帧回调契约——在
+[`pw-video-simple-interface`](https://github.com/zlinux-live-util/pw-video-simple-interface)
+里，作为 git 子模块挂在 `lib/` 下，用同一套编译参数编进本项目的构建树。没初始化子模块
+`make` 会直接报错退出。
 
 默认使用 `-O3 -march=native -funroll-loops`：封面旋转的热循环收益明显，整帧实测降低 22%。代价是二进制绑定本机指令集，因此保留 `PORTABLE=1`。
 
@@ -216,12 +221,12 @@ make dump                                              # 假数据输出一张 P
 | `src/mpris.{hpp,cpp}` | sdbus-c++ 常驻连接 + 采样线程 + LRC 解析 |
 | `src/art.{hpp,cpp}` | libcurl 抓图 → gdk-pixbuf 解码 → cairo 表面（小型 LRU） |
 | `src/card.{hpp,cpp}` | cairo + pango 版面绘制 |
-| `src/pwvideo.{hpp,cpp}` | libpipewire 视频节点输出 |
+| `lib/pw-video-simple-interface/` | git 子模块：PipeWire 视频节点库（注册、缓冲、帧率协商） |
 | `src/main.cpp` | 模块组装与命令行解析 |
 
 ## 修改代码
 
-先读 [docs/internals.md](docs/internals.md)。其中记录了 8 条实机验证得到的约束，包括一个**静默失效**的 PipeWire 标志组合，和一个会**破坏红色通道**的位运算技巧——两者都耗费了不少时间才定位。
+先读 [docs/internals.md](docs/internals.md)。其中记录了 4 条渲染侧约束（含一个会**破坏红色通道**的位运算技巧），以及视频节点库那份笔记的入口——库侧另 4 条 PipeWire 约束里有一条是**静默失效**的标志组合。PipeWire 相关代码已不在本仓库：要改就去改库，然后更新子模块指针。
 
 ## LLM 参与开发
 

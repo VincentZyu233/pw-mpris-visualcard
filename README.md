@@ -13,7 +13,7 @@ No browser, no CEF, no HTTP: one process, no child processes, and nothing is ren
 | Playback state | The player's MPRIS interface (D-Bus) | A `NowPlaying` snapshot: title, artist, album, position, lyrics, cover URL | `mpris`, one persistent D-Bus connection, no forked processes |
 | Artwork | Cover URL | cairo surface (LRU cache, up to 3 entries) | `art`, background thread + libcurl + gdk-pixbuf |
 | Layout | Snapshot + cover surface | BGRA frame (premultiplied alpha) | `card`, cairo + pango |
-| Video output | BGRA frame | `Stream/Output/Video` node | `pwvideo`, libpipewire |
+| Video output | BGRA frame | `Stream/Output/Video` node | [`pw-video-simple-interface`](https://github.com/zlinux-live-util/pw-video-simple-interface), libpipewire |
 
 Every stage runs in the same process and passes data in memory; private memory stays at 6–25 MB.
 
@@ -52,7 +52,7 @@ Two paths, same binary name (`pw-mpris-visualcard-native`).
 paru -S pw-mpris-visualcard-git     # or: yay -S pw-mpris-visualcard-git
 ```
 
-`pw-mpris-visualcard-git` provides and conflicts with `pw-mpris-visualcard`, and ships `x86_64` and `aarch64`. It installs `/usr/bin/pw-mpris-visualcard-native`, the documentation under `/usr/share/doc/pw-mpris-visualcard/`, and the systemd user unit **already rendered** — so step 6's `make install-service` is not needed (and must not be used, see there). It builds with `PORTABLE=1` (see step 3). `obs-pwvideo` and a CJK font (`noto-fonts-cjk`) are declared as optional dependencies.
+`pw-mpris-visualcard-git` provides and conflicts with `pw-mpris-visualcard`, and ships `x86_64` and `aarch64`. It installs `/usr/bin/pw-mpris-visualcard-native`, the documentation under `/usr/share/doc/pw-mpris-visualcard/`, and the systemd user unit **already rendered** — so step 6's `make install-service` is not needed (and must not be used, see there). It builds with `PORTABLE=1` (see step 3) and fetches the video-node library as a second source, so a submodule checkout is not needed. `obs-pwvideo` and a CJK font (`noto-fonts-cjk`) are declared as optional dependencies.
 
 Being a `-git` package it follows the latest commit; rebuilding is what pulls in new revisions.
 
@@ -72,9 +72,15 @@ On the OBS side you need a plugin that can select an arbitrary PipeWire node. OB
 ### 3. Build
 
 ```bash
+git submodule update --init --recursive   # the video-node library is a submodule
 make             # → ./pw-mpris-visualcard-native
 make PORTABLE=1  # the same, without -march=native (other machines, redistribution)
 ```
+
+The PipeWire output — node registration, buffer declarations, frame-rate negotiation, the frame
+callback contract — lives in [`pw-video-simple-interface`](https://github.com/zlinux-live-util/pw-video-simple-interface),
+pulled in as a git submodule under `lib/` and compiled into this project's build tree with the
+same flags. `make` refuses to run without it: it needs the submodule checked out.
 
 The default flags are `-O3 -march=native -funroll-loops`: the cover-rotation hot loop benefits measurably, cutting 22% off a whole frame. The trade-off is a binary tied to the local instruction set, which is what `PORTABLE=1` exists for.
 
@@ -214,12 +220,12 @@ When scaling up, multiply **both dimensions** and keep `W:H = 2:3`; the side mar
 | `src/mpris.{hpp,cpp}` | sdbus-c++ persistent connection + sampling thread + LRC parsing |
 | `src/art.{hpp,cpp}` | libcurl fetch → gdk-pixbuf decode → cairo surface (small LRU) |
 | `src/card.{hpp,cpp}` | Layout rendering with cairo + pango |
-| `src/pwvideo.{hpp,cpp}` | libpipewire video node output |
+| `lib/pw-video-simple-interface/` | Git submodule: the PipeWire video-node library (registration, buffers, frame-rate negotiation) |
 | `src/main.cpp` | Module wiring and command-line parsing |
 
 ## Modifying the code
 
-Read [docs/internals.md](docs/internals.md) first (Chinese only for now). It records eight constraints established on real hardware, including a **silently failing** combination of PipeWire stream flags and a bit-twiddling trick that **destroys the red channel** — both took a long time to pin down.
+Read [docs/internals.md](docs/internals.md) first (Chinese only for now). It records the four rendering constraints established on real hardware — including a bit-twiddling trick that **destroys the red channel** — and points at the video-node library's own notes for its four PipeWire constraints, one of which is a **silently failing** stream-flag combination. The PipeWire code no longer lives here; change the library and bump the submodule pointer.
 
 ## LLM involvement
 

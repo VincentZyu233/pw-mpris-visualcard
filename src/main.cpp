@@ -167,12 +167,17 @@ class App {
 
     artThread_ = std::thread([this] { artLoop(); });
 
-    PwVideo video(cfg_.width, cfg_.height, cfg_.fps, cfg_.nodeName,
-                  cfg_.nodeDescription,
-                  [this](uint8_t* dst, int stride, int w, int h) {
-                    renderInto(dst, stride, w, h);
-                  },
-                  verbose_);
+    pwvideo::Options opt;
+    opt.width = cfg_.width;
+    opt.height = cfg_.height;
+    opt.fpsCap = cfg_.fps;
+    opt.nodeName = cfg_.nodeName;
+    opt.nodeDescription = cfg_.nodeDescription;
+    opt.appName = "pw-mpris-visualcard";
+    opt.verbose = verbose_;
+    pwvideo::VideoNode video(opt, [this](uint8_t* dst, int stride, int w, int h) {
+      renderInto(dst, stride, w, h);
+    });
     video.start();
     std::printf(
         "pw-mpris-visualcard (native) 已启动\n"

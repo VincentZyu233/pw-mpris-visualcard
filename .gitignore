@@ -2,3 +2,6 @@
 *.o
 *.d
 /pw-mpris-visualcard-native
+
+# 子模块源码的构建产物
+/build
