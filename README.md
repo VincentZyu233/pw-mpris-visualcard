@@ -42,9 +42,25 @@ With the default options (`360x360`, no lyrics / time / album) you get the minim
 
 ## Getting started
 
-### 1. Dependencies
+### 1. Install
 
-Everything comes from the distribution repositories; no language package manager is involved.
+Two paths, same binary name (`pw-mpris-visualcard-native`).
+
+**From the AUR** — packaged build, no checkout to maintain:
+
+```bash
+paru -S pw-mpris-visualcard-git     # or: yay -S pw-mpris-visualcard-git
+```
+
+`pw-mpris-visualcard-git` provides and conflicts with `pw-mpris-visualcard`, and ships `x86_64` and `aarch64`. It installs `/usr/bin/pw-mpris-visualcard-native`, the documentation under `/usr/share/doc/pw-mpris-visualcard/`, and the systemd user unit **already rendered** — so step 6's `make install-service` is not needed (and must not be used, see there). It builds with `PORTABLE=1` (see step 3). `obs-pwvideo` and a CJK font (`noto-fonts-cjk`) are declared as optional dependencies.
+
+Being a `-git` package it follows the latest commit; rebuilding is what pulls in new revisions.
+
+**From source** — the two steps below.
+
+### 2. Dependencies
+
+Everything comes from the distribution repositories; no language package manager is involved. (Source build only — the AUR package pulls the same libraries as hard dependencies.)
 
 ```bash
 # Arch
@@ -53,7 +69,7 @@ sudo pacman -S --needed base-devel cairo pango gdk-pixbuf2 libpipewire sdbus-cpp
 
 On the OBS side you need a plugin that can select an arbitrary PipeWire node. OBS ships `linux-pipewire`, which goes through xdg-desktop-portal and can only capture screens and windows — it cannot see this node. Use the [**obs-pwvideo**](https://github.com/tasokait/obs-pwvideo) plugin instead.
 
-### 2. Build
+### 3. Build
 
 ```bash
 make             # → ./pw-mpris-visualcard-native
@@ -62,15 +78,17 @@ make PORTABLE=1  # the same, without -march=native (other machines, redistributi
 
 The default flags are `-O3 -march=native -funroll-loops`: the cover-rotation hot loop benefits measurably, cutting 22% off a whole frame. The trade-off is a binary tied to the local instruction set, which is what `PORTABLE=1` exists for.
 
-### 3. Run
+### 4. Run
 
 ```bash
 ./pw-mpris-visualcard-native
 ```
 
+With the AUR package the binary is on `PATH`, so drop the `./`.
+
 The node name (default `pw-mpris-visualcard`) is printed to the terminal.
 
-### 4. Add it to OBS
+### 5. Add it to OBS
 
 1. Sources **+** → **PipeWire Video** (provided by `obs-pwvideo`).
 2. Pick **Music Card** in the “Source” dropdown. The dropdown displays the node description (`--desc`, default `Music Card`), while the node it actually connects to is `--node` (default `pw-mpris-visualcard`). Both are configurable; do not go by the label alone.
@@ -80,9 +98,18 @@ The alpha channel passes through unchanged, so the card can be overlaid on the s
 
 > Node missing from the dropdown? The plugin enumerates nodes once, **at the moment the dialog is opened**, and never refreshes an open window: confirm the process is running, then reopen the properties window. The node must also satisfy all three of `media.type=Video`, `media.class=Stream/Output/Video` and `media.role=Production` — one missing and it never shows up. Details in [docs/internals.md](docs/internals.md) (Chinese only for now).
 
-### 5. Autostart (optional)
+### 6. Autostart (optional)
 
-The `pw-mpris-visualcard.service` unit in this repository is a **template** holding two placeholders, `@REPO@` (absolute path to the checkout) and `@ARGS@` (launch arguments), so **copying it verbatim will not work**: systemd rejects the unit at load time as misconfigured (`WorkingDirectory= path is not absolute: @REPO@`) and never starts it. Render and install it with `make`:
+Installed **from the AUR**, the unit is already rendered at `/usr/lib/systemd/user/pw-mpris-visualcard.service`, running `--node pw-mpris-visualcard --size 460x690 --fps 30 --lyrics 3`; only enable it:
+
+```bash
+systemctl --user enable --now pw-mpris-visualcard
+systemctl --user edit pw-mpris-visualcard    # change the arguments: override ExecStart=
+```
+
+Do not run `make install-service` on such an install: the unit it writes lands in `~/.config/systemd/user/`, which **shadows** the packaged one, and points back at a checkout. Removal is `pacman -Rns pw-mpris-visualcard-git`.
+
+Installed **from source**, the `pw-mpris-visualcard.service` unit in this repository is a **template** holding two placeholders, `@REPO@` (absolute path to the checkout) and `@ARGS@` (launch arguments), so **copying it verbatim will not work**: systemd rejects the unit at load time as misconfigured (`WorkingDirectory= path is not absolute: @REPO@`) and never starts it. Render and install it with `make`:
 
 ```bash
 make install-service                            # render the unit into ~/.config/systemd/user/

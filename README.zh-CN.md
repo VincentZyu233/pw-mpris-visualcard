@@ -42,7 +42,25 @@
 
 ## 快速开始
 
-### 1. 依赖
+### 1. 安装
+
+两条路，装出来的二进制同名（`pw-mpris-visualcard-native`）。
+
+**从 AUR 安装**——由包管理器构建，不必自己维护一份仓库：
+
+```bash
+paru -S pw-mpris-visualcard-git     # 或 yay -S pw-mpris-visualcard-git
+```
+
+`pw-mpris-visualcard-git` 提供并冲突于 `pw-mpris-visualcard`，支持 `x86_64` 与 `aarch64`。装出来的是 `/usr/bin/pw-mpris-visualcard-native`、`/usr/share/doc/pw-mpris-visualcard/` 下的文档，以及**已经渲染好的** systemd 用户 unit——所以第 6 步的 `make install-service` 不用执行（也不能执行，原因见该节）。构建走 `PORTABLE=1`（见第 3 步）。`obs-pwvideo` 与 CJK 字体（`noto-fonts-cjk`）列为可选依赖。
+
+作为 `-git` 包，它跟随最新提交，重新构建才会拉到新版本。
+
+**从源码安装**——即下面两步。
+
+### 2. 依赖
+
+依赖全部来自发行版仓库，不涉及任何语言包管理器。（仅源码构建需要；AUR 包已把这些库作为硬依赖拉入。）
 
 ArchLinux：
 
@@ -53,7 +71,7 @@ sudo pacman -S --needed base-devel cairo pango gdk-pixbuf2 libpipewire sdbus-cpp
 
 OBS 侧需要一个能选择任意 PipeWire 节点的插件。OBS 自带的 `linux-pipewire` 走 xdg-desktop-portal，只能捕获屏幕与窗口，抓不到本节点；需要配合插件 [**obs-pwvideo**](https://github.com/tasokait/obs-pwvideo) 使用。
 
-### 2. 构建
+### 3. 构建
 
 ```bash
 make             # → ./pw-mpris-visualcard-native
@@ -62,15 +80,17 @@ make PORTABLE=1  # 同上，但不加 -march=native（换机器运行或分发�
 
 默认使用 `-O3 -march=native -funroll-loops`：封面旋转的热循环收益明显，整帧实测降低 22%。代价是二进制绑定本机指令集，因此保留 `PORTABLE=1`。
 
-### 3. 运行
+### 4. 运行
 
 ```bash
 ./pw-mpris-visualcard-native
 ```
 
+用 AUR 包安装的话二进制已在 `PATH` 中，去掉 `./`。
+
 终端会打印节点名（默认 `pw-mpris-visualcard`）。
 
-### 4. 在 OBS 中接入
+### 5. 在 OBS 中接入
 
 1. 来源 **+** → **PipeWire Video**（由 `obs-pwvideo` 提供）。
 2. 在「Source」下拉框中选择 **Music Card**。下拉框里显示的是节点描述（`--desc`，默认 `Music Card`），选中后实际连接的节点名是 `--node`（默认 `pw-mpris-visualcard`）；两者都可以改，别只看显示名。
@@ -80,9 +100,18 @@ make PORTABLE=1  # 同上，但不加 -march=native（换机器运行或分发�
 
 > 下拉框中看不到节点？该插件只在**打开对话框的瞬间**枚举一次节点，不会自动刷新：先确认进程在运行，再重开一次属性窗口。此外节点必须同时满足 `media.type=Video`、`media.class=Stream/Output/Video`、`media.role=Production` 三项，缺一项就完全不显示。细节见 [docs/internals.md](docs/internals.md)。
 
-### 5. 开机自启（可选）
+### 6. 开机自启（可选）
 
-仓库里的 `pw-mpris-visualcard.service` 是**模板**，含 `@REPO@`（仓库绝对路径）和 `@ARGS@`（启动参数）两个占位符，**不能直接复制使用**——systemd 在加载阶段就会判定 unit 配置致命错误（`WorkingDirectory= path is not absolute: @REPO@`），unit 不会被启动。用 `make` 渲染安装：
+**从 AUR 安装**的话 unit 已经渲染好放在 `/usr/lib/systemd/user/pw-mpris-visualcard.service`，参数是 `--node pw-mpris-visualcard --size 460x690 --fps 30 --lyrics 3`，启用即可：
+
+```bash
+systemctl --user enable --now pw-mpris-visualcard
+systemctl --user edit pw-mpris-visualcard    # 改参数：覆盖 ExecStart=
+```
+
+这种情况下**不要**再跑 `make install-service`：它写出的 unit 落在 `~/.config/systemd/user/`，会**遮蔽**包里的那一个，且指向某个 checkout。卸载则是 `pacman -Rns pw-mpris-visualcard-git`。
+
+**从源码安装**的话，仓库里的 `pw-mpris-visualcard.service` 是**模板**，含 `@REPO@`（仓库绝对路径）和 `@ARGS@`（启动参数）两个占位符，**不能直接复制使用**——systemd 在加载阶段就会判定 unit 配置致命错误（`WorkingDirectory= path is not absolute: @REPO@`），unit 不会被启动。用 `make` 渲染安装：
 
 ```bash
 make install-service                            # 渲染 unit 到 ~/.config/systemd/user/
