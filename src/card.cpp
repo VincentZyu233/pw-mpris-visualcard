@@ -168,20 +168,9 @@ Card::Card(Config cfg) : cfg_(std::move(cfg)) {
   const double byWidth = 0.92 * W;
   const double byHeight = 0.96 * H - restH;
   m_.coverD = std::clamp(std::min(byWidth, byHeight), 0.20 * H, byWidth);
-
-  cairo_surface_t* tmp = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
-  cairo_t* cr = cairo_create(tmp);
-  layout_ = pango_cairo_create_layout(cr);
-  font_ = pango_font_description_new();
-  pango_font_description_set_family(font_, "sans-serif");
-  cairo_destroy(cr);
-  cairo_surface_destroy(tmp);
 }
 
-Card::~Card() {
-  if (font_) pango_font_description_free(font_);
-  if (layout_) g_object_unref(layout_);
-}
+Card::~Card() = default;
 
 std::string Card::textKey(const NowPlaying& np, int64_t pos) const {
   const Track& t = np.track;
@@ -293,7 +282,7 @@ cairo_surface_t* Card::staticLayer(const NowPlaying& np, int64_t pos, double k, 
   drawTexts(cr, np, pos, yMeta, textW);
 
   cairo_destroy(cr);
-  layer_ = SurfacePtr(surf, CairoSurfaceDeleter{});
+  layer_ = pwvideo::SurfacePtr(surf, pwvideo::CairoSurfaceDeleter{});
   layerKey_ = std::move(key);
   return layer_.get();
 }
@@ -308,45 +297,28 @@ void Card::drawLine(cairo_t* cr, const std::string& s, double size, double alpha
                     bool bold) {
   if (s.empty() || width <= 0 || boxH <= 0) return;
 
-  pango_cairo_update_layout(cr, layout_);
-  pango_font_description_set_absolute_size(font_, size * PANGO_SCALE);
-  pango_font_description_set_weight(font_, bold ? PANGO_WEIGHT_SEMIBOLD
-                                                : PANGO_WEIGHT_NORMAL);
-  pango_layout_set_font_description(layout_, font_);
-  pango_layout_set_text(layout_, s.c_str(), -1);
-  pango_layout_set_width(layout_, static_cast<int>(width * PANGO_SCALE));
-  pango_layout_set_alignment(layout_, PANGO_ALIGN_CENTER);
-  pango_layout_set_wrap(layout_, PANGO_WRAP_WORD_CHAR);
-  pango_layout_set_ellipsize(layout_, PANGO_ELLIPSIZE_END);
-  pango_layout_set_height(layout_, -maxLines);  // negative = at most N lines
+  pwvideo::LabelSpec spec;
+  spec.sizePx = size;
+  spec.bold = bold;
+  spec.widthPx = width;
+  spec.maxLines = maxLines;
 
-  int pw = 0, ph = 0;
-  pango_layout_get_pixel_size(layout_, &pw, &ph);
-  const double ty = yTop + (boxH - ph) / 2.0;
+  PangoLayout* l = text_.layout(cr, s, spec);
+  const pwvideo::LabelMetrics m = pwvideo::TextRenderer::measure(l);
+  const double ty = yTop + (boxH - m.height) / 2.0;
 
-  // Without a plate, stroke first to fake the shadow: two layers from outside in, progressively denser, approximating CSS's three-layer text-shadow
+  // Without a plate, stroke first to fake the shadow: two layers from outside in, progressively
+  // denser, approximating CSS's three-layer text-shadow.
   if (!hasBg_) {
     const double k = cfg_.height / kBaseSize;
-    cairo_save(cr);
-    cairo_translate(cr, 0, 1.5 * k);
-    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
     static const double glowW[] = {7.0, 3.5};
     static const double glowA[] = {0.35, 0.60};
-    for (int i = 0; i < 2; ++i) {
-      cairo_move_to(cr, x, ty);
-      pango_cairo_layout_path(cr, layout_);
-      cairo_set_source_rgba(cr, 0, 0, 0, glowA[i]);
-      cairo_set_line_width(cr, glowW[i] * k);
-      cairo_stroke(cr);
-    }
-    cairo_restore(cr);
+    for (int i = 0; i < 2; ++i)
+      pwvideo::TextRenderer::outline(cr, l, x, ty, glowW[i] * k,
+                                     pwvideo::Rgba{0, 0, 0, glowA[i]}, 1.5 * k);
   }
 
-  cairo_save(cr);
-  cairo_set_source_rgba(cr, 1, 1, 1, alpha);
-  cairo_move_to(cr, x, ty);
-  pango_cairo_show_layout(cr, layout_);
-  cairo_restore(cr);
+  pwvideo::TextRenderer::fill(cr, l, x, ty, pwvideo::Rgba{1, 1, 1, alpha});
 }
 
 void Card::rotateInto(const uint32_t* src, int sw, int sh, uint32_t* dst, int dpitch,
@@ -544,7 +516,7 @@ void Card::render(cairo_t* cr, const NowPlaying& np, cairo_surface_t* cover,
           cairo_pattern_set_filter(cairo_get_source(sc), CAIRO_FILTER_BILINEAR);
           cairo_paint(sc);
           cairo_destroy(sc);
-          artScaled_ = SurfacePtr(ss, CairoSurfaceDeleter{});
+          artScaled_ = pwvideo::SurfacePtr(ss, pwvideo::CairoSurfaceDeleter{});
           artScaledKey_ = ak;
           coverLayer_.reset();
           coverAngle_ = 1e9;
@@ -566,7 +538,7 @@ void Card::render(cairo_t* cr, const NowPlaying& np, cairo_surface_t* cover,
               cairo_surface_destroy(cs);
               cs = nullptr;
             }
-            coverLayer_ = cs ? SurfacePtr(cs, CairoSurfaceDeleter{}) : nullptr;
+            coverLayer_ = cs ? pwvideo::SurfacePtr(cs, pwvideo::CairoSurfaceDeleter{}) : nullptr;
           }
           if (coverLayer_) {
             cairo_surface_flush(coverLayer_.get());

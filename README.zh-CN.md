@@ -9,7 +9,7 @@
 | 阶段 | 输入 | 输出 | 实现 |
 | --- | --- | --- | --- |
 | 状态采样 | 播放器的 MPRIS 接口（D-Bus） | `NowPlaying` 快照：标题、歌手、专辑、进度、歌词、封面 URL | `mpris`，常驻 D-Bus 连接，不 fork 子进程 |
-| 素材获取 | 封面 URL | cairo 表面（LRU 缓存，最多 3 张） | `art`，后台线程 + libcurl + gdk-pixbuf |
+| 素材获取 | 封面 URL | cairo 表面（LRU 缓存，最多 3 张） | 后台线程 + 子模块的 `AssetCache` |
 | 版面渲染 | 快照 + 封面表面 | BGRA 帧（预乘 alpha） | `card`，cairo + pango |
 | 视频输出 | BGRA 帧 | `Stream/Output/Video` 节点 | [`pw-video-simple-interface`](https://github.com/zlinux-live-util/pw-video-simple-interface)，libpipewire |
 
@@ -188,9 +188,8 @@ make dump                                                    # 假数据输出�
 | `pw-mpris-visualcard.service` | systemd 用户服务模板，由 `make install-service` 渲染安装 |
 | `src/types.hpp` | `Track` / `NowPlaying` / `Config` 数据结构 |
 | `src/mpris.{hpp,cpp}` | sdbus-c++ 常驻连接 + 采样线程 + LRC 解析 |
-| `src/art.{hpp,cpp}` | libcurl 抓图 → gdk-pixbuf 解码 → cairo 表面（小型 LRU） |
 | `src/card.{hpp,cpp}` | cairo + pango 版面绘制 |
-| `lib/pw-video-simple-interface/` | git 子模块：PipeWire 视频节点库（注册、缓冲、帧率协商） |
+| `lib/pw-video-simple-interface/` | git 子模块：视频节点（注册、缓冲、帧率协商）与 cairo 辅助模块（帧、文字、素材缓存、HTTP） |
 | `src/main.cpp` | 模块组装与命令行解析 |
 
 ## 贡献

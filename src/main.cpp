@@ -13,8 +13,9 @@
 
 #include <cairo/cairo.h>
 
-#include "art.hpp"
+#include "assetcache.hpp"
 #include "card.hpp"
+#include "cairo_util.hpp"
 #include "mpris.hpp"
 #include "pwvideo.hpp"
 #include "types.hpp"
@@ -153,7 +154,13 @@ NowPlaying demoState(int64_t now) {
 class App {
  public:
   App(Config cfg, bool demo, bool verbose)
-      : cfg_(std::move(cfg)), demo_(demo), verbose_(verbose), card_(cfg_) {}
+      : cfg_(std::move(cfg)),
+        demo_(demo),
+        verbose_(verbose),
+        card_(cfg_),
+        // capacity 3, the same user agent and timeouts the previous cover loader used
+        loader_(pwvideo::AssetCache::Options{3, "Mozilla/5.0 (pw-mpris-visualcard native)"}),
+        frame_(cfg_.width, cfg_.height) {}
 
   int run(const std::string& dumpPath) {
     if (!demo_) {
@@ -199,38 +206,18 @@ class App {
 
   /** Render one frame into dst (BGRA, premultiplied alpha) */
   void renderInto(uint8_t* dst, int dstStride, int w, int h) {
-    const int FW = cfg_.width, FH = cfg_.height;
-    std::lock_guard lock(frameMu_);
-    if (!frame_ || frameW_ != FW || frameH_ != FH) {
-      frame_.reset(cairo_image_surface_create(CAIRO_FORMAT_ARGB32, FW, FH),
-                   CairoSurfaceDeleter{});
-      frameW_ = FW;
-      frameH_ = FH;
-      frameCr_ = ContextPtr(cairo_create(frame_.get()));
-    }
-    SurfacePtr cover;
+    pwvideo::SurfacePtr cover;
     {
       std::lock_guard lk(artMu_);
       cover = art_;
     }
     const int64_t now = steadyMs();
     const auto t0 = std::chrono::steady_clock::now();
-    card_.render(frameCr_.get(), current(), cover.get(), now);
+    card_.render(frame_.cr(), current(), cover.get(), now);
     const auto t1 = std::chrono::steady_clock::now();
 
     const auto t2 = std::chrono::steady_clock::now();
-    const int srcStride = cairo_image_surface_get_stride(frame_.get());
-    const uint8_t* src = cairo_image_surface_get_data(frame_.get());
-    const int copyW = std::min(w, FW);
-    const int copyH = std::min(h, FH);
-    if (copyW == FW && copyH == FH && dstStride == srcStride) {
-      std::memcpy(dst, src, static_cast<size_t>(srcStride) * FH);
-    } else {
-      for (int y = 0; y < copyH; ++y)
-        std::memcpy(dst + static_cast<size_t>(y) * dstStride,
-                    src + static_cast<size_t>(y) * srcStride,
-                    static_cast<size_t>(copyW) * 4);
-    }
+    frame_.blitTo(dst, dstStride, w, h);
     const auto t3 = std::chrono::steady_clock::now();
     statRender_ += std::chrono::duration<double, std::milli>(t1 - t0).count();
     statCopy_ += std::chrono::duration<double, std::milli>(t3 - t2).count();
@@ -267,7 +254,7 @@ class App {
         continue;
       }
 
-      SurfacePtr s = loader_.get(want, cfg_.height);
+      pwvideo::SurfacePtr s = loader_.get(want, cfg_.height);
       if (s) {
         std::lock_guard lk(artMu_);
         art_ = std::move(s);
@@ -280,18 +267,14 @@ class App {
 
   int dump(const std::string& path) {
     const int FW = cfg_.width, FH = cfg_.height;
-    SurfacePtr surf(cairo_image_surface_create(CAIRO_FORMAT_ARGB32, FW, FH),
-                    CairoSurfaceDeleter{});
-    cairo_t* cr = cairo_create(surf.get());
+    pwvideo::CairoFrame frame(FW, FH);
     NowPlaying np = current();
-    SurfacePtr cover;
+    pwvideo::SurfacePtr cover;
     if (!np.track.artUrl.empty()) cover = loader_.get(np.track.artUrl, FH);
-    card_.render(cr, np, cover.get(), steadyMs() + 1000);
-    // Draw a checkerboard background so transparent areas can be confirmed by eye
-    cairo_destroy(cr);
-    const cairo_status_t st = cairo_surface_write_to_png(surf.get(), path.c_str());
-    if (st != CAIRO_STATUS_SUCCESS) {
-      std::fprintf(stderr, "PNG write failed: %s\n", cairo_status_to_string(st));
+    card_.render(frame.cr(), np, cover.get(), steadyMs() + 1000);
+    if (!frame.writePng(path)) {
+      std::fprintf(stderr, "PNG write failed: %s (%s)\n", path.c_str(),
+                   cairo_status_to_string(cairo_surface_status(frame.surface())));
       return 1;
     }
     std::printf("Wrote %s (%dx%d)\n", path.c_str(), FW, FH);
@@ -303,15 +286,12 @@ class App {
   bool verbose_;
   Card card_;
   MprisClient mpris_;
-  ArtLoader loader_;
+  pwvideo::AssetCache loader_;
 
   std::mutex artMu_;
-  SurfacePtr art_;
+  pwvideo::SurfacePtr art_;
 
-  std::mutex frameMu_;
-  SurfacePtr frame_;
-  ContextPtr frameCr_;
-  int frameW_ = 0, frameH_ = 0;
+  pwvideo::CairoFrame frame_;
 
   std::atomic<bool> stopping_{false};
   std::thread artThread_;

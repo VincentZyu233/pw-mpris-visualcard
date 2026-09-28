@@ -9,7 +9,7 @@ Renders whatever music is playing on this machine as a card and publishes it to 
 | Stage | Input | Output | Implementation |
 | --- | --- | --- | --- |
 | Playback state | The player's MPRIS interface (D-Bus) | A `NowPlaying` snapshot: title, artist, album, position, lyrics, cover URL | `mpris`, one persistent D-Bus connection, no forked processes |
-| Artwork | Cover URL | cairo surface (LRU cache, up to 3 entries) | `art`, background thread + libcurl + gdk-pixbuf |
+| Artwork | Cover URL | cairo surface (LRU cache, up to 3 entries) | background thread + `AssetCache` from the submodule |
 | Layout | Snapshot + cover surface | BGRA frame (premultiplied alpha) | `card`, cairo + pango |
 | Video output | BGRA frame | `Stream/Output/Video` node | [`pw-video-simple-interface`](https://github.com/zlinux-live-util/pw-video-simple-interface), libpipewire |
 
@@ -188,9 +188,8 @@ When scaling up, multiply **both dimensions** and keep `W:H = 2:3`; the side mar
 | `pw-mpris-visualcard.service` | systemd user service template, rendered by `make install-service` |
 | `src/types.hpp` | `Track` / `NowPlaying` / `Config` data structures |
 | `src/mpris.{hpp,cpp}` | sdbus-c++ persistent connection + sampling thread + LRC parsing |
-| `src/art.{hpp,cpp}` | libcurl fetch → gdk-pixbuf decode → cairo surface (small LRU) |
 | `src/card.{hpp,cpp}` | Layout rendering with cairo + pango |
-| `lib/pw-video-simple-interface/` | Git submodule: the PipeWire video-node library (registration, buffers, frame-rate negotiation) |
+| `lib/pw-video-simple-interface/` | Git submodule: the video node (registration, buffers, frame-rate negotiation) plus the cairo helpers (frame, text, asset cache, HTTP) |
 | `src/main.cpp` | Module wiring and command-line parsing |
 
 ## Contributing

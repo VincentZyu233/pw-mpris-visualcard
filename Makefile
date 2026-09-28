@@ -25,9 +25,9 @@ OBJ      := $(SRC:.cpp=.o)
 # Its sources are compiled straight into this project's build tree: one set of compile flags, no
 # ABI to track, and no .o files left behind in the submodule directory.
 PWNODE_DIR  ?= lib/pw-video-simple-interface
-PWNODE_SRC  := $(wildcard $(PWNODE_DIR)/src/*.cpp)
-PWNODE_OBJ  := $(patsubst $(PWNODE_DIR)/src/%.cpp,build/pwvideo/%.o,$(PWNODE_SRC))
-CXXFLAGS    += -I$(PWNODE_DIR)/src
+PWNODE_SRC  := $(wildcard $(PWNODE_DIR)/src/*.cpp) $(wildcard $(PWNODE_DIR)/extras/*.cpp)
+PWNODE_OBJ  := $(patsubst $(PWNODE_DIR)/%.cpp,build/pwvideo/%.o,$(PWNODE_SRC))
+CXXFLAGS    += -I$(PWNODE_DIR)/src -I$(PWNODE_DIR)/extras
 OBJ         += $(PWNODE_OBJ)
 DEP         := $(OBJ:.o=.d)
 
@@ -50,7 +50,7 @@ $(TARGET): $(OBJ)
 src/%.o: src/%.cpp
 	$(CXX) $(CXXFLAGS) -MMD -MP -c -o $@ $<
 
-build/pwvideo/%.o: $(PWNODE_DIR)/src/%.cpp
+build/pwvideo/%.o: $(PWNODE_DIR)/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -MMD -MP -c -o $@ $<
 

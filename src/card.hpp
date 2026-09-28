@@ -2,12 +2,11 @@
 // Card rendering: hand-drawn with cairo + pango. All layout size/color constants are grouped at
 // the top of card.cpp.
 #include <cairo/cairo.h>
-#include <pango/pangocairo.h>
 
 #include <cstdint>
 #include <string>
 
-#include "art.hpp"
+#include "text.hpp"  // pwvideo::TextRenderer, pwvideo::SurfacePtr
 #include "types.hpp"
 
 namespace oms {
@@ -60,15 +59,15 @@ class Card {
   bool hasBg_ = true;
   double bgR_ = 0, bgG_ = 0, bgB_ = 0;
 
-  SurfacePtr layer_;
+  pwvideo::SurfacePtr layer_;
   std::string layerKey_;
 
   /** Rotated cover layer (circular clip + edge antialiasing are baked in; one blit per frame).
    *  Uses a hand-written row-stepping rotation, about 30% faster than cairo's general transform
    *  path. */
-  SurfacePtr coverLayer_;
+  pwvideo::SurfacePtr coverLayer_;
   double coverAngle_ = 1e9;
-  SurfacePtr artScaled_;      // cover scaled to coverD, with a 1px border
+  pwvideo::SurfacePtr artScaled_;      // cover scaled to coverD, with a 1px border
   std::string artScaledKey_;
 
   /** Rotate src (a square image with a 1px border) about its center by angle, writing into the
@@ -77,8 +76,7 @@ class Card {
   static void rotateInto(const uint32_t* src, int sw, int sh, uint32_t* dst, int dpitch,
                          int side, double radius, double angle);
 
-  PangoLayout* layout_ = nullptr;
-  PangoFontDescription* font_ = nullptr;
+  pwvideo::TextRenderer text_;
   double spinAngle_ = 0.0;
   int64_t lastRenderAt_ = 0;
 };

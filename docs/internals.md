@@ -11,14 +11,14 @@
 | 线程 | 职责 | 频率 |
 | --- | --- | --- |
 | MPRIS 采样线程 | 通过常驻 D-Bus 连接读取一次 `GetAll`，产出 `NowPlaying` 快照 | 播放中每 500ms，停止播放后放宽到 2000ms |
-| 封面线程 | 仅在曲目变化时用 libcurl 抓取并解码封面 | 换歌触发 |
+| 封面线程 | 仅在曲目变化时通过子模块的 `AssetCache` 抓取并解码封面 | 换歌触发 |
 
 数据在各模块之间的流转：
 
 | 组件 | 输入 | 输出 |
 | --- | --- | --- |
 | `mpris` | 播放器的 MPRIS 接口（D-Bus） | `NowPlaying` 快照 |
-| `art` | 封面 URL | cairo 表面（LRU 最多 3 张） |
+| 子模块 `extras/assetcache` | 封面 URL | cairo 表面（LRU 最多 3 张） |
 | `card` | 快照 + 封面表面 | BGRA 帧（预乘 alpha） |
 | `pwvideo`（子模块） | BGRA 帧 | `Stream/Output/Video` 节点，供 OBS 消费 |
 
