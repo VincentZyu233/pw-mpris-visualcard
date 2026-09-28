@@ -1,5 +1,5 @@
-// pw-mpris-visualcard native —— 单进程：MPRIS → cairo 渲染 → PipeWire 视频节点
-// 用法见 README.md（英文，默认）或 README.zh-CN.md；--help 有简表。
+// pw-mpris-visualcard native - single process: MPRIS -> cairo rendering -> PipeWire video node
+// Usage: see README.md (English, default) or README.zh-CN.md; --help prints a summary.
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -33,28 +33,28 @@ void usage() {
   std::printf(
       "pw-mpris-visualcard (native)\n"
       "\n"
-      "  --size WxH      输出尺寸。540 = 540x540；360x540 = 竖版；默认 360x360\n"
-      "                  版式按高度缩放；宽度决定左右留白\n"
-      "  --fps N         帧率上限，默认 30（消费者可以拉得更低，不会更高）\n"
-      "  --bg MODE       卡片底色：none(默认，全透明) | solid | #rrggbb\n"
-      "  --progress 0|1  进度环，默认 1\n"
-      "  --time 0|1      显示时间，默认 0\n"
-      "  --album 0|1     显示专辑，默认 0\n"
-      "  --lyrics N      歌词行数，默认 0（关）\n"
-      "  --spin SEC      封面自转一圈秒数，0 = 不转，默认 24\n"
-      "  --idle last|hide  停止后是否保留最后一首，默认 hide\n"
-      "  --node NAME     PipeWire 节点名，默认 pw-mpris-visualcard\n"
-      "  --desc TEXT     节点描述，默认 Music Card\n"
-      "  --dump FILE     采样一次渲染成 PNG 后退出（调版面用）\n"
-      "  --demo          用假数据，不连 D-Bus（调版面用）\n"
-      "  --verbose, -v   打印协商与推帧日志\n"
+      "  --size WxH      Output size. 540 = 540x540; 360x540 = portrait; default 360x360\n"
+      "                  Layout scales by height; the width sets the side margins\n"
+      "  --fps N         Frame-rate ceiling, default 30 (a consumer may go lower, never higher)\n"
+      "  --bg MODE       Card background: none (default, fully transparent) | solid | #rrggbb\n"
+      "  --progress 0|1  Progress ring, default 1\n"
+      "  --time 0|1      Show time, default 0\n"
+      "  --album 0|1     Show album, default 0\n"
+      "  --lyrics N      Lyric lines, default 0 (off)\n"
+      "  --spin SEC      Seconds per full cover rotation, 0 = no rotation, default 24\n"
+      "  --idle last|hide  Keep the last track after playback stops, default hide\n"
+      "  --node NAME     PipeWire node name, default pw-mpris-visualcard\n"
+      "  --desc TEXT     Node description, default Music Card\n"
+      "  --dump FILE     Render one sample to PNG and exit (for layout tuning)\n"
+      "  --demo          Use fake data, no D-Bus connection (for layout tuning)\n"
+      "  --verbose, -v   Log negotiation and frame pushes\n"
       "  --help\n");
 }
 
 bool parseArgs(int argc, char** argv, Config& cfg, std::string& dump, bool& demo,
                bool& verbose) {
   auto next = [&](int& i) -> std::string {
-    if (i + 1 >= argc) throw std::runtime_error("缺少参数值");
+    if (i + 1 >= argc) throw std::runtime_error("missing argument value");
     return argv[++i];
   };
   for (int i = 1; i < argc; ++i) {
@@ -98,7 +98,7 @@ bool parseArgs(int argc, char** argv, Config& cfg, std::string& dump, bool& demo
     } else if (a == "--verbose" || a == "-v") {
       verbose = true;
     } else {
-      std::fprintf(stderr, "未知参数: %s\n", a.c_str());
+      std::fprintf(stderr, "unknown argument: %s\n", a.c_str());
       usage();
       return false;
     }
@@ -106,7 +106,7 @@ bool parseArgs(int argc, char** argv, Config& cfg, std::string& dump, bool& demo
   return true;
 }
 
-/* ---------------- 演示数据（--demo） ---------------- */
+/* ---------------- Demo data (--demo) ---------------- */
 
 struct DemoTrack {
   const char* title;
@@ -130,7 +130,7 @@ std::vector<Lyric> demoLyrics() {
 }
 
 NowPlaying demoState(int64_t now) {
-  constexpr int64_t kStep = 10000;  // 每 10 秒换一首，方便快速看版式
+  constexpr int64_t kStep = 10000;  // Switch tracks every 10 seconds, to inspect the layout quickly
   const int idx = static_cast<int>((now / kStep) % 3);
   const DemoTrack& d = kDemo[idx];
   NowPlaying np;
@@ -142,13 +142,13 @@ NowPlaying demoState(int64_t now) {
   np.track.duration = d.duration;
   np.track.id = "/demo/" + std::to_string(idx);
   np.track.lyrics = demoLyrics();
-  np.position = (now % kStep) * 8;  // 假装在快进
+  np.position = (now % kStep) * 8;  // Pretend to fast-forward
   np.rate = 1.0;
   np.sampledAt = now;
   return np;
 }
 
-/* ---------------- 应用 ---------------- */
+/* ---------------- Application ---------------- */
 
 class App {
  public:
@@ -158,7 +158,7 @@ class App {
   int run(const std::string& dumpPath) {
     if (!demo_) {
       mpris_.start();
-      // 等第一次采样，避免开场空一帧
+      // Wait for the first sample, so the opening is not a blank frame
       for (int i = 0; i < 30 && !mpris_.healthy(); ++i)
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
@@ -180,13 +180,13 @@ class App {
     });
     video.start();
     std::printf(
-        "pw-mpris-visualcard (native) 已启动\n"
-        "  PipeWire 节点: %s   [OBS 里用「PipeWire Video」源选它]\n"
-        "  尺寸: %dx%d @ %d fps\n",
+        "pw-mpris-visualcard (native) started\n"
+        "  PipeWire node: %s   [select it as a \"PipeWire Video\" source in OBS]\n"
+        "  Size: %dx%d @ %d fps\n",
         cfg_.nodeName.c_str(), cfg_.width, cfg_.height, cfg_.fps);
     std::fflush(stdout);
 
-    video.run();  // 阻塞到 SIGINT/SIGTERM
+    video.run();  // Blocks until SIGINT/SIGTERM
     stopping_.store(true);
     if (artThread_.joinable()) artThread_.join();
     return 0;
@@ -197,7 +197,7 @@ class App {
     return demo_ ? demoState(steadyMs()) : mpris_.snapshot();
   }
 
-  /** 渲染一帧到 dst（BGRA，预乘 alpha） */
+  /** Render one frame into dst (BGRA, premultiplied alpha) */
   void renderInto(uint8_t* dst, int dstStride, int w, int h) {
     const int FW = cfg_.width, FH = cfg_.height;
     std::lock_guard lock(frameMu_);
@@ -236,14 +236,15 @@ class App {
     statCopy_ += std::chrono::duration<double, std::milli>(t3 - t2).count();
     if (++statN_ == 120) {
       if (verbose_)
-        std::fprintf(stderr, "[stat] 渲染 %.3f ms/帧   拷贝 %.3f ms/帧\n",
+        std::fprintf(stderr, "[stat] render %.3f ms/frame   copy %.3f ms/frame\n",
                      statRender_ / statN_, statCopy_ / statN_);
       statRender_ = statCopy_ = 0;
       statN_ = 0;
     }
   }
 
-  /** 后台取封面：只在 URL 变化时抓，失败 30 秒后重试 */
+  /** Background cover fetch: fetched only when the URL changes; a failed fetch is retried after
+   *  30 seconds */
   void artLoop() {
     std::string want;
     int64_t retryAt = 0;
@@ -286,14 +287,14 @@ class App {
     SurfacePtr cover;
     if (!np.track.artUrl.empty()) cover = loader_.get(np.track.artUrl, FH);
     card_.render(cr, np, cover.get(), steadyMs() + 1000);
-    // 再画一层棋盘格背景，方便肉眼确认透明区域
+    // Draw a checkerboard background so transparent areas can be confirmed by eye
     cairo_destroy(cr);
     const cairo_status_t st = cairo_surface_write_to_png(surf.get(), path.c_str());
     if (st != CAIRO_STATUS_SUCCESS) {
-      std::fprintf(stderr, "写 PNG 失败: %s\n", cairo_status_to_string(st));
+      std::fprintf(stderr, "PNG write failed: %s\n", cairo_status_to_string(st));
       return 1;
     }
-    std::printf("已写出 %s (%dx%d)\n", path.c_str(), FW, FH);
+    std::printf("Wrote %s (%dx%d)\n", path.c_str(), FW, FH);
     return 0;
   }
 
@@ -328,7 +329,7 @@ int main(int argc, char** argv) {
   try {
     if (!parseArgs(argc, argv, cfg, dumpPath, demo, verbose)) return 0;
   } catch (const std::exception& e) {
-    std::fprintf(stderr, "参数错误: %s\n", e.what());
+    std::fprintf(stderr, "argument error: %s\n", e.what());
     return 2;
   }
 
@@ -336,7 +337,7 @@ int main(int argc, char** argv) {
     App app(cfg, demo, verbose);
     return app.run(dumpPath);
   } catch (const std::exception& e) {
-    std::fprintf(stderr, "启动失败: %s\n", e.what());
+    std::fprintf(stderr, "startup failed: %s\n", e.what());
     return 1;
   }
 }

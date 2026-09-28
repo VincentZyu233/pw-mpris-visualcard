@@ -1,16 +1,19 @@
-// 卡片渲染实现
+// Card rendering.
 //
-// 性能要点：
-//   1) cairo 的线性渐变填充非常慢（360×360 上一次约 0.6ms），所有每帧不变的东西
-//      （卡片底、封面投影、封面圆底渐变、进度环底环）都烘焙进静态层，每帧只 blit。
-//   2) 文字 shaping + 投影描边同样贵，所以和上面那些一起并进同一个静态层，
-//      按内容做 key 缓存，只在换歌 / 歌词翻页 / 秒数变化时重做。
+// Performance notes:
+//   1) Cairo linear-gradient fills are very slow (about 0.6ms per 360x360 pass), so everything
+//      that does not change per frame (card base, cover shadow, cover disc gradient, progress-ring
+//      track) is baked into the static layer and only blitted each frame.
+//   2) Text shaping + shadow stroking is equally expensive, so it joins the same static layer as
+//      the above, keyed by content, and is redone only on a track change, lyric page flip, or a
+//      second tick.
 //
-// 底色 --bg：
-//   none（默认）—— 完全透明。封面放大到 92% 宽/纵向预算、次级文字提亮到 .9、
-//                  文字和封面自带投影，否则叠在亮的游戏画面上会糊掉。
-//   solid       —— 不透明深色底 #16171c。
-//   #rrggbb     —— 指定底色。
+// Background --bg:
+//   none (default) -- fully transparent. Cover enlarged to 92% width / vertical budget, secondary
+//                     text brightened to .9, text and cover carry their own shadows; otherwise they
+//                     smear over a bright game frame.
+//   solid          -- opaque dark background #16171c.
+//   #rrggbb        -- explicit background colour.
 #include "card.hpp"
 
 #include <algorithm>
@@ -23,7 +26,7 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 
-// 版面常量，全部以「源高 360px」为基准，实际按 height/360 等比缩放
+// Layout constants, all based on a source height of 360px; scaled proportionally by height/360.
 constexpr double kBaseSize = 360.0;
 constexpr double kPadPx = 12.0;
 constexpr double kRadiusPx = 14.0 * 1.7;
@@ -33,16 +36,16 @@ constexpr double kRingGapPx = 6.0;
 constexpr double kRingWPx = 3.0;
 constexpr double kLyricMarginTopPx = 3.0;
 
-// 封面直径：有底板 min(62vh,84%) / min(48vh,72%)；无底板 min(68vh,92%) / min(54vh,82%)
+// Cover diameter: with plate min(62vh,84%) / min(48vh,72%); without plate min(68vh,92%) / min(54vh,82%)
 constexpr double kCoverSolidNoLyric = 0.62;
 constexpr double kCoverSolidLyric = 0.48;
 constexpr double kCoverNoneNoLyric = 0.68;
 constexpr double kCoverNoneLyric = 0.54;
 
-// 颜色（与 :root 一致）
+// Colours (matching :root)
 constexpr double kSolidR = 0x16 / 255.0, kSolidG = 0x17 / 255.0, kSolidB = 0x1c / 255.0;
 constexpr double kFgDimSolid = 0.62;
-constexpr double kFgDimNone = 0.90;   // 无底板时提亮，否则半透明白字会“化掉”
+constexpr double kFgDimNone = 0.90;   // brightened without a plate, otherwise translucent white text smears
 constexpr double kRingColor = 0.09;
 constexpr double kTrackColor = 0.16;
 constexpr double kAccentColor = 0.92;
@@ -54,7 +57,7 @@ int hexVal(char c) {
   return -1;
 }
 
-/** "none" / "transparent" / "0" → 无底色；"solid" / "dark" → 默认深色；"#rgb"/"#rrggbb" → 指定色 */
+/** "none" / "transparent" / "0" → no background; "solid" / "dark" → default dark; "#rgb" / "#rrggbb" → explicit colour */
 bool parseBg(const std::string& v, double& r, double& g, double& b) {
   std::string s;
   for (char c : v) s.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
@@ -76,8 +79,8 @@ bool parseBg(const std::string& v, double& r, double& g, double& b) {
 
 double maxOf(double a, double b) { return a > b ? a : b; }
 
-/** 双通道打包插值：R+B 一次算、G+A 一次算，权重和在 0..256 之间。
- *  只在权重和为 256 时安全。权重和写 65536 会让红色通道左移溢出被打飞。 */
+/** Two-channel packed interpolation: R+B in one pass, G+A in another; the weight sum lies in 0..256.
+ *  Safe only when the weight sum is 256. Writing the weight sum as 65536 overflows the red channel's left shift and blows it out. */
 inline uint32_t lerp2(uint32_t a, uint32_t b, uint32_t w) {
   const uint32_t iw = 256 - w;
   const uint32_t lo = (((a & 0x00FF00FF) * iw + (b & 0x00FF00FF) * w) >> 8) & 0x00FF00FF;
@@ -112,7 +115,7 @@ std::string fmtTime(int64_t ms) {
   return buf;
 }
 
-/** 唱到第几句（二分），-1 表示还没到第一句 */
+/** Which lyric line is playing (binary search); -1 means the first line has not been reached. */
 int activeLyric(const std::vector<Lyric>& L, int64_t ms) {
   int lo = 0, hi = static_cast<int>(L.size()) - 1, ans = -1;
   while (lo <= hi) {
@@ -133,7 +136,7 @@ Card::Card(Config cfg) : cfg_(std::move(cfg)) {
   hasBg_ = parseBg(cfg_.bg, bgR_, bgG_, bgB_);
 
   const double W = cfg_.width, H = cfg_.height;
-  const double k = H / kBaseSize;   // 所有尺寸按高度等比缩放
+  const double k = H / kBaseSize;   // all dimensions scale proportionally with height
 
   m_.pad = hasBg_ ? kPadPx * k : 0.0;
   m_.radius = kRadiusPx * k;
@@ -146,9 +149,11 @@ Card::Card(Config cfg) : cfg_(std::move(cfg)) {
   m_.lyricSize = maxOf(10.0 * k, 0.030 * H);
   m_.timeSize = maxOf(9.0 * k, 0.027 * H);
 
-  // 封面直径：取「宽度允许」和「纵向剩余」的较小者。
-  // 方形画布下纵向总是先到顶，于是左右必然空一截 —— 想收紧就把 --size 的宽改小。
-  // 纵向按「有歌词」的最坏情况预留，避免切到有歌词的歌时封面突然缩放。
+  // Cover diameter: the smaller of "width allows" and "vertical remainder".
+  // On a square canvas the vertical limit binds first, so the sides are necessarily left empty --
+  // to tighten, reduce the width of --size.
+  // The vertical budget reserves for the lyric-present worst case, so the cover does not suddenly
+  // rescale when switching to a track with lyrics.
   const int nLy = cfg_.lyricLines;
   const double titleBox = 2.0 * 1.3 * m_.titleSize;
   const double subBox = 1.35 * m_.subSize;
@@ -224,7 +229,7 @@ cairo_surface_t* Card::staticLayer(const NowPlaying& np, int64_t pos, double k, 
   const double coverR = m_.coverD / 2.0;
 
   if (hasBg_) {
-    // 外阴影 0 6px 22px rgba(0,0,0,.32)：几层递减描边近似（只在卡片圆角外可见）
+    // Outer shadow 0 6px 22px rgba(0,0,0,.32): approximated by several decreasing strokes (visible only outside the card's rounded corners)
     const double dy = 6.0 * k, blur = 22.0 * k;
     static const double widths[] = {1.0, 0.72, 0.45, 0.22};
     static const double alphas[] = {0.02, 0.05, 0.08, 0.11};
@@ -242,8 +247,8 @@ cairo_surface_t* Card::staticLayer(const NowPlaying& np, int64_t pos, double k, 
     cairo_set_source_rgba(cr, 1, 1, 1, kRingColor);
     cairo_stroke(cr);
   } else {
-    // 无底板：封面得自带柔和投影，否则叠在亮画面上边缘会化掉。
-    // 用几圈向外扩散、逐层变淡的描边近似 drop-shadow。
+    // No plate: the cover must carry its own soft shadow, otherwise its edge smears over a bright frame.
+    // Approximated by several outward-spreading, progressively fainter strokes as a drop-shadow.
     static const double spread[] = {1.5, 3.4, 5.6};
     static const double alpha[] = {0.22, 0.14, 0.07};
     for (int i = 0; i < 3; ++i) {
@@ -254,7 +259,7 @@ cairo_surface_t* Card::staticLayer(const NowPlaying& np, int64_t pos, double k, 
     }
   }
 
-  // 封面圆底：CSS linear-gradient(150deg, --track, transparent)。这是全画面最贵的一笔
+  // Cover disc: CSS linear-gradient(150deg, --track, transparent). The most expensive pass in the whole frame.
   {
     const double ang = 150.0 * kPi / 180.0;
     const double dx = std::sin(ang), dy = -std::cos(ang);
@@ -269,13 +274,13 @@ cairo_surface_t* Card::staticLayer(const NowPlaying& np, int64_t pos, double k, 
     cairo_fill(cr);
     cairo_pattern_destroy(g);
   }
-  // art-wrap 的 1px 内描边
+  // art-wrap's 1px inner stroke
   cairo_arc(cr, cx, cy, coverR - 0.5, 0, 2 * kPi);
   cairo_set_line_width(cr, 1.0);
   cairo_set_source_rgba(cr, 1, 1, 1, kRingColor);
   cairo_stroke(cr);
 
-  // 进度环底环也是静态的（描边很贵，别每帧画）
+  // The progress-ring track is static too (stroking is expensive; do not draw it every frame)
   if (cfg_.showProgress) {
     const double ringR = coverR + m_.ringGap - m_.ringW / 2.0;
     cairo_arc(cr, cx, cy, ringR, 0, 2 * kPi);
@@ -284,7 +289,7 @@ cairo_surface_t* Card::staticLayer(const NowPlaying& np, int64_t pos, double k, 
     cairo_stroke(cr);
   }
 
-  // 文字并进同一层（含无底板时的投影描边）
+  // Text joins the same layer (including the shadow stroke when there is no plate)
   drawTexts(cr, np, pos, yMeta, textW);
 
   cairo_destroy(cr);
@@ -313,13 +318,13 @@ void Card::drawLine(cairo_t* cr, const std::string& s, double size, double alpha
   pango_layout_set_alignment(layout_, PANGO_ALIGN_CENTER);
   pango_layout_set_wrap(layout_, PANGO_WRAP_WORD_CHAR);
   pango_layout_set_ellipsize(layout_, PANGO_ELLIPSIZE_END);
-  pango_layout_set_height(layout_, -maxLines);  // 负数 = 最多 N 行
+  pango_layout_set_height(layout_, -maxLines);  // negative = at most N lines
 
   int pw = 0, ph = 0;
   pango_layout_get_pixel_size(layout_, &pw, &ph);
   const double ty = yTop + (boxH - ph) / 2.0;
 
-  // 无底板时先描边做出投影：两层由外到内、逐层加浓，近似 CSS 的三层 text-shadow
+  // Without a plate, stroke first to fake the shadow: two layers from outside in, progressively denser, approximating CSS's three-layer text-shadow
   if (!hasBg_) {
     const double k = cfg_.height / kBaseSize;
     cairo_save(cr);
@@ -350,8 +355,8 @@ void Card::rotateInto(const uint32_t* src, int sw, int sh, uint32_t* dst, int dp
   const double scx = sw / 2.0, scy = sh / 2.0;
   const double inner = (R - 0.5) * (R - 0.5);
 
-  // 源坐标和旋转都用 16.16 定点：省掉每像素的 double 与 floor。
-  // 实测这一版比双精度逐通道版快 43%（0.754 → 0.431 ms @327px）。
+  // Source coordinates and rotation both use 16.16 fixed point: saves a double and a floor per pixel.
+  // Measured 43% faster than the per-channel double-precision version (0.754 → 0.431 ms @327px).
   const int32_t ca = static_cast<int32_t>(std::llround(std::cos(angle) * 65536.0));
   const int32_t sa = static_cast<int32_t>(std::llround(std::sin(angle) * 65536.0));
   const int32_t SCX = static_cast<int32_t>(std::llround(scx * 65536.0));
@@ -378,24 +383,24 @@ void Card::rotateInto(const uint32_t* src, int sw, int sh, uint32_t* dst, int dp
       const double px = (x + 0.5) - cx;
       const double d2 = px * px + dy * dy;
       double cov = 1.0;
-      if (d2 > inner) {  // 只在 1px 圆环上算 sqrt
+      if (d2 > inner) {  // compute sqrt only on the 1px ring
         const double d = std::sqrt(d2);
         cov = R + 0.5 - d;
         if (cov <= 0.0) continue;
         if (cov > 1.0) cov = 1.0;
       }
-      const int32_t fx = sx - 32768;  // 扣除 0.5 像素偏移
+      const int32_t fx = sx - 32768;  // subtract the 0.5 pixel offset
       const int32_t fy = sy - 32768;
-      const int ix = fx >> 16;        // 算术右移 = floor
+      const int ix = fx >> 16;        // arithmetic right shift = floor
       const int iy = fy >> 16;
       const uint32_t tx = static_cast<uint32_t>((fx >> 8) & 0xFF);
       const uint32_t ty = static_cast<uint32_t>((fy >> 8) & 0xFF);
-      // 源带 1px 边框，正常落在 [-1, sw-2]；这个判断只是兜底
+      // The source carries a 1px border and normally lands in [-1, sw-2]; this check is only a fallback.
       if (ix < -1 || iy < -1) continue;
       const uint32_t* r0 = src + static_cast<size_t>(iy) * sw + ix;
       uint32_t out = lerp2(lerp2(r0[0], r0[1], tx), lerp2(r0[sw], r0[sw + 1], tx), ty);
 
-      if (cov < 1.0) {  // 圆边羽化；预乘 alpha，四通道一起缩
+      if (cov < 1.0) {  // round-edge feathering; premultiplied alpha, all four channels scaled together
         const uint32_t c = static_cast<uint32_t>(cov * 256.0);
         const uint32_t lo = (((out & 0x00FF00FF) * c) >> 8) & 0x00FF00FF;
         const uint32_t hi = ((((out >> 8) & 0x00FF00FF) * c) >> 8) & 0x00FF00FF;
@@ -461,7 +466,7 @@ void Card::render(cairo_t* cr, const NowPlaying& np, cairo_surface_t* cover,
   const double k = H / kBaseSize;
   const Track& t = np.track;
 
-  // 封面自转：暂停时冻结
+  // Cover spin: frozen while paused
   if (lastRenderAt_ != 0 && np.playing() && cfg_.spinSeconds > 0) {
     const double dt = static_cast<double>(nowMs - lastRenderAt_) / 1000.0;
     if (dt > 0 && dt < 1.0) spinAngle_ += dt / cfg_.spinSeconds * 2 * kPi;
@@ -476,7 +481,7 @@ void Card::render(cairo_t* cr, const NowPlaying& np, cairo_surface_t* cover,
     return;
   }
 
-  /* ---------------- 先算布局 ---------------- */
+  /* ---------------- compute layout ---------------- */
   const double coverR = m_.coverD / 2.0;
   const double titleBox = 2.0 * 1.3 * m_.titleSize;
   const double subBox = 1.35 * m_.subSize;
@@ -504,7 +509,7 @@ void Card::render(cairo_t* cr, const NowPlaying& np, cairo_surface_t* cover,
   if (np.playing()) pos += static_cast<int64_t>((nowMs - np.sampledAt) * np.rate);
   const int64_t textPos = showTimes ? std::clamp<int64_t>(pos, 0, t.duration) : pos;
 
-  /* ---------------- 静态层（含文字）：一步覆盖整帧 ---------------- */
+  /* ---------------- static layer (incl. text): covers the whole frame in one step ---------------- */
   {
     cairo_surface_t* bgs = staticLayer(np, textPos, k, W, H, cy, yMeta, textW);
     if (bgs) {
@@ -519,14 +524,14 @@ void Card::render(cairo_t* cr, const NowPlaying& np, cairo_surface_t* cover,
   const bool dim = !np.playing() && !np.paused();
   if (dim) cairo_push_group(cr);
 
-  /* ---------------- 封面 ---------------- */
+  /* ---------------- cover ---------------- */
   if (cover) {
     const int sw = cairo_image_surface_get_width(cover);
     const int sh = cairo_image_surface_get_height(cover);
     if (sw > 0 && sh > 0) {
       const int side = static_cast<int>(m_.coverD) + 2;
 
-      // 1) 按 coverD 缩放一次（每首歌一次），带 1px 边框
+      // 1) Scale once to coverD (once per track), with a 1px border
       char ak[96];
       std::snprintf(ak, sizeof ak, "%p#%d", static_cast<const void*>(cover), side);
       if (!artScaled_ || artScaledKey_ != ak) {
@@ -548,8 +553,8 @@ void Card::render(cairo_t* cr, const NowPlaying& np, cairo_surface_t* cover,
         }
       }
 
-      // 2) 每帧真旋转。按角度分档能省 0.4ms，但 24 秒一圈时只有 7.5Hz 更新，
-      //    肉眼就是明显的卡顿 —— 所以这里不平滑就不省。
+      // 2) True rotation every frame. Quantising by angle saves 0.4ms, but at a 24-second
+      //    revolution it updates at only 7.5Hz -- visibly stuttery -- so no saving without smoothing.
       if (artScaled_) {
         if (!coverLayer_ ||
             cairo_image_surface_get_width(coverLayer_.get()) != side ||
@@ -583,12 +588,12 @@ void Card::render(cairo_t* cr, const NowPlaying& np, cairo_surface_t* cover,
       }
     }
   } else {
-    // .card.no-art 的 “♪” 占位
+    // "\u266a" placeholder of .card.no-art
     drawLine(cr, "\u266a", maxOf(18.0 * k, 0.14 * H), kFgDimSolid, cx - coverR,
              m_.coverD, cy - coverR, m_.coverD, 1, false);
   }
 
-  /* ---------------- 进度弧 ---------------- */
+  /* ---------------- progress arc ---------------- */
   if (cfg_.showProgress && t.duration > 0) {
     const double ringR = coverR + m_.ringGap - m_.ringW / 2.0;
     const int64_t clamped = std::clamp<int64_t>(pos, 0, t.duration);

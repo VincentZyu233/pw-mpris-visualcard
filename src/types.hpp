@@ -1,12 +1,12 @@
 #pragma once
-// pw-mpris-visualcard / native —— 共享数据类型
+// pw-mpris-visualcard / native - shared data types
 #include <cstdint>
 #include <string>
 #include <vector>
 
 namespace oms {
 
-/** LRC 一行：t = 毫秒 */
+/** One LRC line: t = milliseconds. */
 struct Lyric {
   int t = 0;
   std::string text;
@@ -18,37 +18,38 @@ struct Track {
   std::string artist;
   std::string album;
   std::string artUrl;
-  int duration = 0;  // 毫秒
+  int duration = 0;  // milliseconds
   std::vector<Lyric> lyrics;
 };
 
-/** 一次 MPRIS 采样结果。position 是 sampledAt 时刻的位置，靠 rate 外推。 */
+/** One MPRIS sample. position is the position at the sampledAt instant, extrapolated by rate. */
 struct NowPlaying {
   std::string status;  // "Playing" | "Paused" | "Stopped"
   std::string player;
   Track track;
-  int64_t position = 0;   // 毫秒
+  int64_t position = 0;   // milliseconds
   double rate = 1.0;
-  int64_t sampledAt = 0;  // steady_clock 毫秒
+  int64_t sampledAt = 0;  // steady_clock milliseconds
 
   bool playing() const { return status == "Playing"; }
   bool paused() const { return status == "Paused"; }
 };
 
-/** 渲染与输出配置（全部由命令行参数填充） */
+/** Render and output configuration (populated entirely from CLI flags). */
 struct Config {
-  int width = 360;             // 输出宽（px）
-  int height = 360;            // 输出高（px）。等比缩放全部按 height 走
-  int fps = 30;                // 推帧频率上限
-  // 卡片底色：none / transparent = 完全透明（默认）；solid / dark = 不透明深色底；
-  // 也可以直接给 #rrggbb。透明模式下会自动放大封面、提亮次级文字并加投影。
+  int width = 360;             // output width (px)
+  int height = 360;            // output height (px). All proportional scaling is driven by height
+  int fps = 30;                // frame push rate ceiling
+  // Card background: none / transparent = fully transparent (default); solid / dark = opaque
+  // dark background; a literal #rrggbb is also accepted. Transparent mode automatically
+  // enlarges the cover, brightens secondary text and adds a drop shadow.
   std::string bg = "none";
-  bool showProgress = true;    // 进度环
-  bool showTime = false;       // 时间
-  bool showAlbum = false;      // 专辑名
-  int lyricLines = 0;          // 0 = 不显示歌词；N = 显示 N 行
-  double spinSeconds = 24;     // 封面自转一圈的秒数，0 = 不转
-  bool idleLast = false;       // true = 停止后保留最后一首
+  bool showProgress = true;    // progress ring
+  bool showTime = false;       // time
+  bool showAlbum = false;      // album name
+  int lyricLines = 0;          // 0 = no lyrics; N = show N lines
+  double spinSeconds = 24;     // seconds per full cover rotation, 0 = no rotation
+  bool idleLast = false;       // true = keep the last track after playback stops
   std::string nodeName = "pw-mpris-visualcard";
   std::string nodeDescription = "Music Card";
 };

@@ -1,5 +1,6 @@
 #pragma once
-// 卡片渲染：cairo + pango 手绘。所有版面尺寸/颜色常量集中在 card.cpp 顶部
+// Card rendering: hand-drawn with cairo + pango. All layout size/color constants are grouped at
+// the top of card.cpp.
 #include <cairo/cairo.h>
 #include <pango/pangocairo.h>
 
@@ -18,10 +19,10 @@ class Card {
   Card(const Card&) = delete;
   Card& operator=(const Card&) = delete;
 
-  /** 当前是否有内容要显示 */
+  /** Whether there is currently anything to display. */
   bool visible(const NowPlaying& np) const;
 
-  /** 画一帧。cr 的画布必须是 cfg.size 见方；cover 可为 nullptr。 */
+  /** Draw one frame. The cr canvas must be a cfg.size square; cover may be nullptr. */
   void render(cairo_t* cr, const NowPlaying& np, cairo_surface_t* cover, int64_t nowMs);
 
   int width() const { return cfg_.width; }
@@ -37,19 +38,20 @@ class Card {
 
   bool transparent() const { return !hasBg_; }
 
-  /** 静态层：卡片底 / 封面投影 / 封面圆底渐变 / 进度环底环 / 全部文字。
-   *  文字和封面不重叠，所以并进同一层完全安全 —— 每帧只需一次 blit。
-   *  内容（含文字 key）没变就直接复用。 */
+  /** Static layer: card background / cover drop shadow / cover circular-backdrop gradient /
+   *  progress-ring track / all text. Text and cover do not overlap, so merging them into the same
+   *  layer is entirely safe: one blit per frame. Reused as-is while the content (including the
+   *  text key) is unchanged. */
   cairo_surface_t* staticLayer(const NowPlaying& np, int64_t pos, double k, double W,
                                double H, double cy, double yMeta, double textW);
 
-  /** 文字层的缓存 key */
+  /** Cache key for the text layer. */
   std::string textKey(const NowPlaying& np, int64_t pos) const;
 
   void drawTexts(cairo_t* cr, const NowPlaying& np, int64_t pos, double yMeta,
                  double textW);
 
-  /** 画一行（钳到 maxLines 行）文字；glow 时先描边做投影再填字 */
+  /** Draw one text line (clamped to maxLines); with glow, stroke the shadow first, then fill. */
   void drawLine(cairo_t* cr, const std::string& s, double size, double alpha, double x,
                 double width, double yTop, double boxH, int maxLines, bool bold);
 
@@ -61,15 +63,17 @@ class Card {
   SurfacePtr layer_;
   std::string layerKey_;
 
-  /** 旋转后的封面图层（圆形裁剪 + 边缘抗锯齿都已烘焙进去，每帧只需一次 blit）。
-   *  用自己写的逐行步进旋转，比 cairo 的通用变换路径快约 30%。 */
+  /** Rotated cover layer (circular clip + edge antialiasing are baked in; one blit per frame).
+   *  Uses a hand-written row-stepping rotation, about 30% faster than cairo's general transform
+   *  path. */
   SurfacePtr coverLayer_;
   double coverAngle_ = 1e9;
-  SurfacePtr artScaled_;      // 按 coverD 缩放好的封面，带 1px 边框
+  SurfacePtr artScaled_;      // cover scaled to coverD, with a 1px border
   std::string artScaledKey_;
 
-  /** 把 src（带 1px 边框的方形图）绕中心旋转 angle，写进 dst 的圆形区域。
-   *  同一行内源坐标是等步长的，所以整行只有起始值需要两次乘法。 */
+  /** Rotate src (a square image with a 1px border) about its center by angle, writing into the
+   *  circular region of dst. Within a row the source coordinates are equally spaced, so only the
+   *  row's start value needs the two multiplications. */
   static void rotateInto(const uint32_t* src, int sw, int sh, uint32_t* dst, int dpitch,
                          int side, double radius, double angle);
 

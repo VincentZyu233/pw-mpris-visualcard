@@ -1,4 +1,4 @@
-// 封面获取实现
+// Cover art fetching.
 #include "art.hpp"
 
 #include <curl/curl.h>
@@ -19,7 +19,7 @@ std::once_flag g_curlInit;
 size_t writeCb(char* ptr, size_t size, size_t nmemb, void* userdata) {
   auto* buf = static_cast<std::string*>(userdata);
   const size_t n = size * nmemb;
-  if (buf->size() + n > kMaxImageBytes) return 0;  // 触发 curl 中止
+  if (buf->size() + n > kMaxImageBytes) return 0;  // Aborts the curl transfer
   buf->append(ptr, n);
   return n;
 }
@@ -44,7 +44,7 @@ struct FileCloser {
 };
 using FilePtr = std::unique_ptr<std::FILE, FileCloser>;
 
-/** 把 GdkPixbuf 转成 cairo ARGB32（小端即 BGRA，预乘 alpha） */
+/** Converts a GdkPixbuf to cairo ARGB32 (BGRA on little-endian, premultiplied alpha) */
 cairo_surface_t* pixbufToSurface(GdkPixbuf* pb) {
   const int w = gdk_pixbuf_get_width(pb);
   const int h = gdk_pixbuf_get_height(pb);
@@ -124,7 +124,8 @@ SurfacePtr ArtLoader::get(const std::string& url, int size) {
     }
   }
 
-  // 网络和解码放在锁外，避免卡住其它线程；竞态最多重复抓一次，无害。
+  // Network and decode run outside the lock so other threads are not blocked; a race at
+  // worst fetches the same image twice, which is harmless.
   SurfacePtr surf = fetch(url, size);
   if (!surf) {
     std::lock_guard lock(mu_);
@@ -143,9 +144,9 @@ SurfacePtr ArtLoader::fetch(const std::string& url, int size) {
   std::string data;
 
   if (url.rfind("file://", 0) == 0) {
-    // file:///path —— 无网络，直接读
+    // file:///path -- no network, read directly
     std::string path = url.substr(7);
-    // 极简百分号解码（封面路径基本用不到，但保持一致）
+    // Minimal percent decoding (cover paths rarely need it, but stay consistent)
     std::string decoded;
     decoded.reserve(path.size());
     for (size_t i = 0; i < path.size(); ++i) {
@@ -213,14 +214,15 @@ SurfacePtr ArtLoader::fetch(const std::string& url, int size) {
     if (err) g_error_free(err);
     return nullptr;
   }
-  GdkPixbuf* raw = gdk_pixbuf_loader_get_pixbuf(loader.get());  // 归 loader 所有
+  GdkPixbuf* raw = gdk_pixbuf_loader_get_pixbuf(loader.get());  // Owned by the loader
   if (!raw) return nullptr;
 
   const int w = gdk_pixbuf_get_width(raw);
   const int h = gdk_pixbuf_get_height(raw);
   if (w <= 0 || h <= 0) return nullptr;
 
-  // 先按“短边铺满”裁成正方形，再缩放——效果等同 CSS 的 object-fit: cover
+  // Crop to a square that fills from the short edge first, then scale -- equivalent to CSS
+  // object-fit: cover
   const int side = w < h ? w : h;
   const int offX = (w - side) / 2;
   const int offY = (h - side) / 2;

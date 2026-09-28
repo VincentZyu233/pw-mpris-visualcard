@@ -1,6 +1,6 @@
 #pragma once
-// MPRIS 客户端：一条常驻 D-Bus 连接 + 后台采样线程。
-// 对比 Node 版每次调用 fork 一个 busctl —— 这里进程数恒定为 0。
+// MPRIS client: one persistent D-Bus connection + a background sampling thread.
+// The Node version forks one busctl per call; here the process count is constant at 0.
 #include <memory>
 #include <string>
 #include <vector>
@@ -9,7 +9,7 @@
 
 namespace oms {
 
-/** 解析 LRC 文本（MPRIS 的 xesam:asText）。不足两行或没有时间戳返回空。 */
+/** Parse LRC text (MPRIS xesam:asText). Returns empty on fewer than two lines or no timestamps. */
 std::vector<Lyric> parseLrc(const std::string& raw);
 
 class MprisClient {
@@ -19,14 +19,14 @@ class MprisClient {
   MprisClient(const MprisClient&) = delete;
   MprisClient& operator=(const MprisClient&) = delete;
 
-  /** 建立连接并启动后台采样线程。失败抛 std::runtime_error。 */
+  /** Establish the connection and start the background sampling thread. Throws std::runtime_error on failure. */
   void start();
   void stop();
 
-  /** 线程安全快照。 */
+  /** Thread-safe snapshot. */
   NowPlaying snapshot() const;
 
-  /** 采样线程是否还活着（连接断了会置 false）。 */
+  /** Whether the sampling thread is still alive (cleared to false when the connection drops). */
   bool healthy() const;
 
  private:

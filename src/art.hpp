@@ -1,6 +1,6 @@
 #pragma once
-// 封面获取：libcurl 拉取 → gdk-pixbuf 解码 → 缩放到目标尺寸 → cairo ARGB32 表面
-// 带小型 LRU 缓存，全程 RAII，不出现裸指针所有权。
+// Cover fetching: libcurl download -> gdk-pixbuf decode -> scale to target size -> cairo ARGB32
+// surface. Small LRU cache; RAII throughout, no raw-pointer ownership.
 #include <cairo/cairo.h>
 
 #include <cstdint>
@@ -32,10 +32,12 @@ class ArtLoader {
   ArtLoader(const ArtLoader&) = delete;
   ArtLoader& operator=(const ArtLoader&) = delete;
 
-  /** 取封面：已缩放到 size×size 的 ARGB32（预乘 alpha）表面。失败返回 nullptr。 */
+  /** Fetch a cover: an ARGB32 (premultiplied alpha) surface already scaled to size x size.
+   *  Returns nullptr on failure. */
   SurfacePtr get(const std::string& url, int size);
 
-  /** 清空缓存（换歌时按需调用，正常 LRU 会自己淘汰）。 */
+  /** Clear the cache (call on demand when the track changes; under normal operation the LRU
+   *  evicts on its own). */
   void clear();
 
   uint64_t fetched() const { return fetched_; }
@@ -51,11 +53,11 @@ class ArtLoader {
   };
 
   std::mutex mu_;
-  std::deque<Entry> cache_;  // 头部最新
+  std::deque<Entry> cache_;  // newest at the front
   size_t cap_ = 3;
   uint64_t fetched_ = 0;
   uint64_t failed_ = 0;
-  void* curl_ = nullptr;  // CURL*，只在锁内使用
+  void* curl_ = nullptr;  // CURL*, used only while holding the lock
 };
 
 }  // namespace oms

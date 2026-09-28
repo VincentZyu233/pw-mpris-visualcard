@@ -1,21 +1,21 @@
-# pw-mpris-visualcard —— systemd 用户服务（模板文件）
+# pw-mpris-visualcard -- systemd user service (template file)
 #
-# 本文件含两个占位符，直接复制到 ~/.config/systemd/user/ 无法启动：
-#   @REPO@  仓库的绝对路径（WorkingDirectory / Documentation / ExecStart 都用它）
-#   @ARGS@  启动参数
+# This file contains two placeholders; copied as is into ~/.config/systemd/user/ it cannot start:
+#   @REPO@  absolute path of the repository (used by WorkingDirectory / Documentation / ExecStart)
+#   @ARGS@  start arguments
 #
-# 用 `make install-service` 渲染并安装到 ~/.config/systemd/user/：
-#   make install-service                                   # 用默认参数
-#   make install-service SERVICE_ARGS="--size 360x360"     # 覆盖启动参数
-#   make uninstall-service                                 # 卸载
+# Use `make install-service` to render and install it into ~/.config/systemd/user/:
+#   make install-service                                   # default arguments
+#   make install-service SERVICE_ARGS="--size 360x360"     # override start arguments
+#   make uninstall-service                                 # uninstall
 #
-# 手动安装也可以，先把两个占位符替换成实际值即可；不替换时 systemd 在加载阶段就会
-# 判定 unit 配置致命错误并拒绝启动：
+# Manual installation is possible too: replace the two placeholders with real values first. Left
+# unreplaced, systemd rejects the unit at load time as a fatal configuration error:
 #   WorkingDirectory= path is not absolute: @REPO@
 #   Unit configuration has fatal error, unit will not be started.
 
 [Unit]
-Description=pw-mpris-visualcard — 把正在播放的音乐渲染成 PipeWire 视频节点
+Description=pw-mpris-visualcard — render the playing track as a PipeWire video node
 Documentation=file://@REPO@/README.md
 Documentation=file://@REPO@/README.zh-CN.md
 After=default.target
@@ -24,29 +24,35 @@ After=default.target
 Type=simple
 WorkingDirectory=@REPO@
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
-# --node 要和 OBS 里「PipeWire Video」源选的名称一致。
-# --size 是输出尺寸，可以写 WxH。版式全部按「高度」等比缩放，宽度只决定左右留白。
-#   放大就两个数一起乘：保持 W:H = 2:3，左右留白就一直是 4%。
-#     OBS 1080p 画布下常见的几档（高度 = 卡片的绝对高度）：
-#       360x540  → 占画布高 50%   CPU ≈ 3.6%
-#       400x600  → 占画布高 56%   CPU ≈ 4.2%
-#       460x690  → 占画布高 64%   CPU ≈ 5.5%   ← 默认值
-#       480x720  → 占画布高 67%   CPU ≈ 6.3%
-#   以上都含封面自转。关掉自转（--spin 0）整帧开销还能再砍掉约 60%。
-#   方形画布（如 540x540）横向必然空掉一大截 —— 圆形封面被纵向预算卡死，横向自然富余。
-#   记得把 OBS 里那个源的宽高设成和这里一致，才是 1:1 不被缩放。
-# --fps 是帧率上限（默认 30）。CPU 开销大致与帧率成正比：
-#   --fps 15 ≈ 减半，--fps 10 ≈ 三分之一。消费者可以协商到更低，但不会超过这个上限。
-# --lyrics N 显示 N 行同步歌词（当前句固定在第一行槽位，高亮）。0 = 关闭。
-#   歌词来自 MPRIS 的 xesam:asText（LRC）；播放器没给就是没有，不会显示空行。
-#   开歌词会把封面从 68vh 缩到 54vh 给它让位。
-# 注意：本服务设了 PrivateTmp=yes，--dump 的输出会落在服务私有的 /tmp 里而取不出来。
-#   调版面请直接在终端跑 --dump，不要写进这里。
+# --node must match the name selected in the OBS "PipeWire Video" source.
+# --size is the output size, written as WxH. The whole layout scales proportionally by height;
+#   width only decides the left/right padding.
+#   To scale up, multiply both numbers: keeping W:H = 2:3 keeps the padding at 4%.
+#     Common steps on an OBS 1080p canvas (height = absolute card height):
+#       360x540  -> 50% of canvas height   CPU ~ 3.6%
+#       400x600  -> 56% of canvas height   CPU ~ 4.2%
+#       460x690  -> 64% of canvas height   CPU ~ 5.5%   <- default
+#       480x720  -> 67% of canvas height   CPU ~ 6.3%
+#   All of the above include the spinning cover. Turning the spin off (--spin 0) cuts the
+#   per-frame cost by roughly another 60%.
+#   A square canvas (e.g. 540x540) necessarily leaves a large horizontal gap: the round cover is
+#   capped by the vertical budget, so width is naturally in surplus.
+#   Set the OBS source's width/height to match this, so the output is 1:1 and not scaled.
+# --fps is the frame-rate ceiling (default 30). CPU cost is roughly proportional to frame rate:
+#   --fps 15 ~ half, --fps 10 ~ one third. The consumer may negotiate lower, never above this.
+# --lyrics N shows N lines of synced lyrics (the current line is pinned to the first slot and
+#   highlighted). 0 = off.
+#   Lyrics come from MPRIS xesam:asText (LRC); if the player provides none there are none, and no
+#   blank lines are shown.
+#   Enabling lyrics shrinks the cover from 68vh to 54vh to make room.
+# Note: this service sets PrivateTmp=yes, so --dump output lands in the service-private /tmp and
+#   cannot be retrieved.
+#   To tune the layout, run --dump directly in a terminal; do not put it here.
 ExecStart=@REPO@/pw-mpris-visualcard-native @ARGS@
 Restart=always
 RestartSec=2
 
-# 只输出视频给 PipeWire，不需要任何额外能力
+# Outputs video to PipeWire only; no additional capabilities are required
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict

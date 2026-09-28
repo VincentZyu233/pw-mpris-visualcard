@@ -1,7 +1,7 @@
-# 构建产物
+# Build artifacts
 *.o
 *.d
 /pw-mpris-visualcard-native
 
-# 子模块源码的构建产物
+# Build artifacts from the submodule sources
 /build

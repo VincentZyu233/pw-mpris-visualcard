@@ -1,4 +1,4 @@
-// MPRIS 客户端实现（sdbus-c++ 常驻连接）
+// MPRIS client implementation (sdbus-c++ persistent connection)
 #include "mpris.hpp"
 
 #include <sdbus-c++/sdbus-c++.h>
@@ -48,7 +48,7 @@ size_t skipSpace(const std::string& s, size_t i) {
   return i;
 }
 
-/** s[0, byteEnd) 里的 UTF-8 码点数（用不着完整校验，计数够用） */
+/** UTF-8 code point count in s[0, byteEnd). Full validation is unnecessary; counting is enough. */
 size_t codePoints(const std::string& s, size_t byteEnd) {
   size_t n = 0;
   for (size_t i = 0; i < byteEnd && i < s.size(); ++i) {
@@ -66,7 +66,7 @@ bool isColonAt(const std::string& s, size_t i) {
          static_cast<unsigned char>(s[i + 2]) == 0x9A;  // U+FF1A ：
 }
 
-/** 歌头 20 秒内的“作词：xxx”这类制作人员行 */
+/** Production-credit lines such as "lyricist: xxx" within the first 20 seconds of a track */
 bool isCredit(const std::string& text) {
   const size_t start = skipSpace(text, 0);
   const std::string s = text.substr(start);
@@ -92,7 +92,7 @@ bool isCredit(const std::string& text) {
   return false;
 }
 
-/** “短标签：内容”——歌头里出现的多半是制作信息而不是歌词 */
+/** "short label: value". Near the track head these are mostly production info, not lyrics. */
 bool isShortLabel(const std::string& text) {
   const size_t start = skipSpace(text, 0);
   const std::string s = text.substr(start);
@@ -102,7 +102,7 @@ bool isShortLabel(const std::string& text) {
     if (n < 1 || n > 10) return false;
     size_t q = i + (s[i] == ':' ? 1 : 3);
     q = skipSpace(s, q);
-    return q < s.size();  // 冒号后还有非空白才算
+    return q < s.size();  // only counts when non-whitespace follows the colon
   }
   return false;
 }
@@ -126,7 +126,7 @@ std::optional<T> pick(const std::map<std::string, sdbus::Variant>& m,
   }
 }
 
-/** mpris:length 等时长字段：多数播放器给 int64 微秒，少数给 uint64 */
+/** Duration fields such as mpris:length: most players give int64 microseconds, a few give uint64 */
 std::optional<int64_t> pickInt(const std::map<std::string, sdbus::Variant>& m,
                                const std::string& key) {
   if (auto v = pick<int64_t>(m, key)) return v;
@@ -139,7 +139,7 @@ std::optional<int64_t> pickInt(const std::map<std::string, sdbus::Variant>& m,
   return std::nullopt;
 }
 
-/** xesam:artist 规范是 as，但实际有播放器给单字符串 */
+/** xesam:artist is specified as as, but some players give a single string in practice */
 std::string pickArtists(const std::map<std::string, sdbus::Variant>& m) {
   if (auto v = pick<std::vector<std::string>>(m, "xesam:artist")) {
     std::string out;
@@ -180,7 +180,7 @@ std::vector<Lyric> parseLrc(const std::string& raw) {
   std::vector<Lyric> out;
   if (trim(raw).empty()) return out;
 
-  // 时间戳是纯 ASCII，字节语义 == 字符语义，用 std::regex 安全
+  // Timestamps are pure ASCII, so byte semantics == character semantics; std::regex is safe
   static const std::regex stamp(R"(\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\])");
   static const std::regex anyTag(R"(\[[^\]]*\])");
 
@@ -228,14 +228,14 @@ std::vector<Lyric> parseLrc(const std::string& raw) {
 }
 
 /* ------------------------------------------------------------------ */
-/* 采样                                                                */
+/* Sampling                                                          */
 /* ------------------------------------------------------------------ */
 
 struct MprisClient::Impl {
   struct PlayerState {
     std::string status = "Stopped";
     Track track;
-    int64_t position = 0;  // 毫秒
+    int64_t position = 0;  // milliseconds
     double rate = 1.0;
     int64_t at = 0;
   };
@@ -329,7 +329,7 @@ struct MprisClient::Impl {
       if (it == states.end() || now - it->second.at >= ttl) sampleOne(svc, now);
     }
 
-    // 排序：Playing > Paused；同档优先沿用上次的活动播放器
+    // Ranking: Playing > Paused; within the same rank, keep the previously active player
     auto rank = [](const std::string& s) {
       if (s == "Playing") return 2;
       if (s == "Paused") return 1;
@@ -374,7 +374,7 @@ struct MprisClient::Impl {
         pollOnce();
         healthy.store(true, std::memory_order_relaxed);
       } catch (...) {
-        // 连接断了：标记不健康，保持旧状态，等下次重试
+        // Connection lost: mark unhealthy, keep the old state, retry on the next pass
         healthy.store(false, std::memory_order_relaxed);
       }
       for (int i = 0; i < 50 && running.load(std::memory_order_relaxed); ++i)
