@@ -225,7 +225,7 @@ When scaling up, multiply **both dimensions** and keep `W:H = 2:3`; the side mar
 
 ## Modifying the code
 
-Read [docs/internals.md](docs/internals.md) first (Chinese only for now). It records the four rendering constraints established on real hardware — including a bit-twiddling trick that **destroys the red channel** — and points at the video-node library's own notes for its four PipeWire constraints, one of which is a **silently failing** stream-flag combination. The PipeWire code no longer lives here; change the library and bump the submodule pointer.
+Read [docs/internals.md](docs/internals.md) first (Chinese only for now). It records the rendering constraints this project depends on and links the video-node library's own notes for the PipeWire side. PipeWire code no longer lives here: change the library and bump the submodule pointer.
 
 ## LLM involvement
 
