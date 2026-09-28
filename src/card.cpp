@@ -77,7 +77,7 @@ bool parseBg(const std::string& v, double& r, double& g, double& b) {
 double maxOf(double a, double b) { return a > b ? a : b; }
 
 /** 双通道打包插值：R+B 一次算、G+A 一次算，权重和在 0..256 之间。
- *  ⚠️ 只在权重和为 256 时安全。权重和写 65536 会让红色通道左移溢出被打飞。 */
+ *  只在权重和为 256 时安全。权重和写 65536 会让红色通道左移溢出被打飞。 */
 inline uint32_t lerp2(uint32_t a, uint32_t b, uint32_t w) {
   const uint32_t iw = 256 - w;
   const uint32_t lo = (((a & 0x00FF00FF) * iw + (b & 0x00FF00FF) * w) >> 8) & 0x00FF00FF;
