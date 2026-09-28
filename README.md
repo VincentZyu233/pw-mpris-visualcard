@@ -2,9 +2,7 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-Renders whatever music is playing on this machine as a card and publishes it to OBS directly as a **PipeWire video node**.
-
-No browser, no CEF, no HTTP: one process, no child processes, and nothing is rendered while no consumer is connected.
+Renders whatever music is playing on this machine as a card and publishes it to OBS as a **PipeWire video node**. One process, no browser, no child processes, and no rendering while no consumer is connected.
 
 ## How it works
 
@@ -19,24 +17,24 @@ Every stage runs in the same process and passes data in memory; private memory s
 
 ## Features
 
-- Playback metadata comes from D-Bus / MPRIS (musicfox, Spotify, VLC, mpv, Rhythmbox, …) over a single persistent connection and with zero child processes; polling implementations fork `busctl` several times per second.
-- Fully transparent background by default: only the cover disc and the text are on screen. Both carry their own drop shadow, so they stay legible over bright content.
-- Synced lyrics taken from the MPRIS `xesam:asText` property (LRC). The current line keeps the first slot and is highlighted, the following lines sit below it, and the block never jumps.
+- Playback metadata comes from D-Bus / MPRIS (musicfox, Spotify, VLC, mpv, Rhythmbox, …) over one persistent connection, with zero child processes.
+- Transparent background by default: only the cover disc and the text are drawn, each with its own drop shadow so they stay legible over bright content.
+- Synced lyrics from the MPRIS `xesam:asText` property (LRC). The current line keeps the first slot and is highlighted; the block never jumps.
 - The cover rotates like a record and freezes while paused.
-- Progress ring, elapsed time and album name can be toggled independently.
-- Any output size (`WxH`); the layout scales proportionally with height.
-- Adjustable frame-rate ceiling; consumers may negotiate a lower rate, never a higher one.
-- The layout can be tuned without opening OBS: `--dump` writes a PNG directly.
+- Progress ring, elapsed time and album name toggle independently.
+- Any output size (`WxH`); the layout scales with height.
+- Adjustable frame-rate ceiling; consumers may negotiate lower, never higher.
+- Layout tuning without OBS: `--dump` writes a PNG directly.
 
 ## Preview
 
-Both PNGs below are `--dump` output captured during real playback. The background is transparent; nothing was retouched.
+Both PNGs are `--dump` output captured during real playback, with a transparent background.
 
 ![Example card](docs/card-460x690.png)
 
 `--size 460x690 --lyrics 4 --time 1 --album 1`: circular cover (rotating) + title + artist · album + highlighted current line + dimmed following lines + progress ring + `0:38 / 2:47`.
 
-With the default options (`360x360`, no lyrics / time / album) you get the minimal form:
+With the default options (`360x360`, no lyrics / time / album):
 
 ![Default card](docs/card-360x360.png)
 
@@ -52,22 +50,20 @@ Two paths, same binary name (`pw-mpris-visualcard-native`).
 paru -S pw-mpris-visualcard-git     # or: yay -S pw-mpris-visualcard-git
 ```
 
-`pw-mpris-visualcard-git` provides and conflicts with `pw-mpris-visualcard`, and ships `x86_64` and `aarch64`. It installs `/usr/bin/pw-mpris-visualcard-native`, the documentation under `/usr/share/doc/pw-mpris-visualcard/`, and the systemd user unit **already rendered** — so step 6's `make install-service` is not needed (and must not be used, see there). It builds with `PORTABLE=1` (see step 3) and fetches the video-node library as a second source, so a submodule checkout is not needed. `obs-pwvideo` and a CJK font (`noto-fonts-cjk`) are declared as optional dependencies.
+`pw-mpris-visualcard-git` provides and conflicts with `pw-mpris-visualcard`, and ships `x86_64` and `aarch64`. It installs `/usr/bin/pw-mpris-visualcard-native`, the documentation under `/usr/share/doc/pw-mpris-visualcard/`, and the systemd user unit already rendered. It builds with `PORTABLE=1` (see step 3) and fetches the video-node library as a second source, so no submodule checkout is needed. `obs-pwvideo` and a CJK font (`noto-fonts-cjk`) are optional dependencies. As a `-git` package it follows the latest commit.
 
-Being a `-git` package it follows the latest commit; rebuilding is what pulls in new revisions.
-
-**From source** — the two steps below.
+**From source** — the steps below.
 
 ### 2. Dependencies
 
-Everything comes from the distribution repositories; no language package manager is involved. (Source build only — the AUR package pulls the same libraries as hard dependencies.)
+Everything comes from the distribution repositories; no language package manager is involved. (Source build only; the AUR package pulls the same libraries as hard dependencies.)
 
 ```bash
 # Arch
 sudo pacman -S --needed base-devel cairo pango gdk-pixbuf2 libpipewire sdbus-cpp curl
 ```
 
-On the OBS side you need a plugin that can select an arbitrary PipeWire node. OBS ships `linux-pipewire`, which goes through xdg-desktop-portal and can only capture screens and windows — it cannot see this node. Use the [**obs-pwvideo**](https://github.com/tasokait/obs-pwvideo) plugin instead.
+OBS ships `linux-pipewire`, which goes through xdg-desktop-portal and can only capture screens and windows; it cannot select this node. Use the [**obs-pwvideo**](https://github.com/tasokait/obs-pwvideo) plugin instead.
 
 ### 3. Build
 
@@ -77,10 +73,7 @@ make             # → ./pw-mpris-visualcard-native
 make PORTABLE=1  # the same, without -march=native (other machines, redistribution)
 ```
 
-The PipeWire output — node registration, buffer declarations, frame-rate negotiation, the frame
-callback contract — lives in [`pw-video-simple-interface`](https://github.com/zlinux-live-util/pw-video-simple-interface),
-pulled in as a git submodule under `lib/` and compiled into this project's build tree with the
-same flags. `make` refuses to run without it: it needs the submodule checked out.
+The PipeWire output (node registration, buffer declarations, frame-rate negotiation, the frame callback contract) lives in [`pw-video-simple-interface`](https://github.com/zlinux-live-util/pw-video-simple-interface), pulled in as a git submodule under `lib/` and compiled into this project's build tree with the same flags. `make` fails with an explicit message if the submodule is not checked out.
 
 The default flags are `-O3 -march=native -funroll-loops`: the cover-rotation hot loop benefits measurably, cutting 22% off a whole frame. The trade-off is a binary tied to the local instruction set, which is what `PORTABLE=1` exists for.
 
@@ -90,52 +83,37 @@ The default flags are `-O3 -march=native -funroll-loops`: the cover-rotation hot
 ./pw-mpris-visualcard-native
 ```
 
-With the AUR package the binary is on `PATH`, so drop the `./`.
-
-The node name (default `pw-mpris-visualcard`) is printed to the terminal.
+With the AUR package the binary is on `PATH`. The node name (default `pw-mpris-visualcard`) is printed to the terminal.
 
 ### 5. Add it to OBS
 
 1. Sources **+** → **PipeWire Video** (provided by `obs-pwvideo`).
-2. Pick **Music Card** in the “Source” dropdown. The dropdown displays the node description (`--desc`, default `Music Card`), while the node it actually connects to is `--node` (default `pw-mpris-visualcard`). Both are configurable; do not go by the label alone.
-3. **Set width and height to match `--size`** (default `360 × 360`) so the card is shown 1:1 and unscaled.
+2. Select **Music Card**. The dropdown displays the node description (`--desc`, default `Music Card`) and connects to the node name (`--node`, default `pw-mpris-visualcard`); the two are separate fields.
+3. Set the source width and height to match `--size` (default `360x360`) so the card is shown unscaled.
 
-The alpha channel passes through unchanged, so the card can be overlaid on the scene as is.
-
-> Node missing from the dropdown? The plugin enumerates nodes once, **at the moment the dialog is opened**, and never refreshes an open window: confirm the process is running, then reopen the properties window. The node must also satisfy all three of `media.type=Video`, `media.class=Stream/Output/Video` and `media.role=Production` — one missing and it never shows up. Details in [docs/internals.md](docs/internals.md) (Chinese only for now).
+The alpha channel passes through unchanged, so the card can be overlaid on the scene as is. obs-pwvideo enumerates nodes when the properties dialog is opened and does not refresh an open dialog; if the node is absent, confirm the process is running and reopen it. Node visibility and frame delivery are covered in [docs/internals.md](docs/internals.md).
 
 ### 6. Autostart (optional)
 
-Installed **from the AUR**, the unit is already rendered at `/usr/lib/systemd/user/pw-mpris-visualcard.service`, running `--node pw-mpris-visualcard --size 460x690 --fps 30 --lyrics 3`; only enable it:
+Installed from the AUR, the unit is already rendered at `/usr/lib/systemd/user/pw-mpris-visualcard.service` with the arguments `--node pw-mpris-visualcard --size 460x690 --fps 30 --lyrics 3`:
 
 ```bash
 systemctl --user enable --now pw-mpris-visualcard
-systemctl --user edit pw-mpris-visualcard    # change the arguments: override ExecStart=
+systemctl --user edit pw-mpris-visualcard    # override ExecStart= to change the arguments
 ```
 
-Do not run `make install-service` on such an install: the unit it writes lands in `~/.config/systemd/user/`, which **shadows** the packaged one, and points back at a checkout. Removal is `pacman -Rns pw-mpris-visualcard-git`.
+`make install-service` must not be used on that install: it writes to `~/.config/systemd/user/`, which shadows the packaged unit. Removal is `pacman -Rns pw-mpris-visualcard-git`.
 
-Installed **from source**, the `pw-mpris-visualcard.service` unit in this repository is a **template** holding two placeholders, `@REPO@` (absolute path to the checkout) and `@ARGS@` (launch arguments), so **copying it verbatim will not work**: systemd rejects the unit at load time as misconfigured (`WorkingDirectory= path is not absolute: @REPO@`) and never starts it. Render and install it with `make`:
-
-```bash
-make install-service                            # render the unit into ~/.config/systemd/user/
-systemctl --user enable --now pw-mpris-visualcard    # enable and start it
-```
-
-The default arguments are `--node pw-mpris-visualcard --size 460x690 --fps 30 --lyrics 3`; override `SERVICE_ARGS` to change them:
+From source, `pw-mpris-visualcard.service` is a template holding `@REPO@` and `@ARGS@`, so it is rendered rather than copied:
 
 ```bash
+make install-service                            # render into ~/.config/systemd/user/
 make install-service SERVICE_ARGS="--node pw-mpris-visualcard --size 360x360 --fps 30"
-systemctl --user restart pw-mpris-visualcard         # restart to apply new arguments
-```
-
-`make install-service` only writes the unit and runs `daemon-reload`; it never enables or starts anything for you, so the existing state of the machine is left alone. To remove the unit:
-
-```bash
 make uninstall-service
+systemctl --user restart pw-mpris-visualcard    # after changing the arguments
 ```
 
-> Installing by hand works too, but both placeholders must be replaced first. Note also that the service sets `PrivateTmp=yes`, so `--dump` output would land in the service's private `/tmp` and be unreachable — tune the layout by running `--dump` in a terminal, not from the unit.
+`make install-service` writes the unit and runs `daemon-reload`; it never enables or starts anything.
 
 ## Command-line options
 
@@ -160,8 +138,8 @@ make uninstall-service
 ### Tuning the layout without opening OBS
 
 ```bash
-make dump                                              # one PNG from fake data
-./pw-mpris-visualcard-native --dump /tmp/card.png --time 1  # from real playback data
+make dump                                                    # one PNG from fake data
+./pw-mpris-visualcard-native --dump /tmp/card.png --time 1   # from real playback data
 ./pw-mpris-visualcard-native --demo --dump /tmp/card.png --lyrics 4 --time 1 --album 1
 ```
 
@@ -175,11 +153,11 @@ make dump                                              # one PNG from fake data
 | With no consumer attached | zero frames pushed, **≈0.25%** CPU |
 | Child processes | **0** (persistent D-Bus connection) |
 
-What lies beyond the private memory is shared libraries (cairo, pango, dbus, curl, gdk-pixbuf, PipeWire) and fontconfig caches — system-wide shared pages that are not duplicated per process.
+What lies beyond the private memory is shared libraries (cairo, pango, dbus, curl, gdk-pixbuf, PipeWire) and fontconfig caches: system-wide shared pages that are not duplicated per process.
 
 ### Choosing a size
 
-The layout stacks a circular cover above the text, and **the circle's diameter is constrained by the vertical budget**, so a square canvas inevitably leaves margins on both sides. Narrowing the width until it just fits the content removes them:
+The layout stacks a circular cover above the text, and the circle's diameter is constrained by the vertical budget, so a square canvas always leaves margins on both sides. Narrowing the width until it just fits the content removes them:
 
 | `--size` | Content width | Side margins | CPU (one core) |
 | --- | --- | --- | --- |
@@ -189,21 +167,13 @@ The layout stacks a circular cover above the text, and **the circle's diameter i
 | **`460x690`** | **96%** | **4%** | **~5.5%** |
 | `480x720` | 96% | 4% | ~6.3% |
 
-When scaling up, multiply **both dimensions** and keep `W:H = 2:3`; the side margins stay at 4%. Cost is dominated by the cover and the text, both of which scale with **height**, so narrowing the width saves almost no CPU — it only removes empty space.
+When scaling up, multiply **both dimensions** and keep `W:H = 2:3`; the side margins stay at 4%. Cost is dominated by the cover and the text, both of which scale with **height**, so narrowing the width saves almost no CPU; it only removes empty space.
 
 ### Reducing CPU further
 
 - `--spin 0` — cuts roughly 60% outright (rotation resamples every frame and is the most expensive stage in the pipeline).
 - `--fps 24` — saves about one sixth.
 - Drop the height by one step.
-
-## Troubleshooting
-
-| Symptom | What to check |
-| --- | --- |
-| The node is absent from the Source dropdown | Is the process running? Was the dialog opened before it started (nodes are enumerated only when the dialog opens)? Are all three properties `media.type`, `media.class` and `media.role` present? |
-| The node is listed but OBS shows a blank frame | Whether `PW_STREAM_FLAG_DRIVER` was added to the stream flags (see [docs/internals.md](docs/internals.md)) |
-| The image is stretched or cropped | Whether the source width and height in OBS match `--size` |
 
 ## Repository layout
 
@@ -212,7 +182,7 @@ When scaling up, multiply **both dimensions** and keep `W:H = 2:3`; the side mar
 | `README.md` | This file (English) |
 | `README.zh-CN.md` | Chinese version |
 | `LICENSE` | Full text of the MIT license |
-| `docs/internals.md` | Architecture notes and field-tested pitfalls (read before changing code; Chinese only for now) |
+| `docs/internals.md` | Rendering constraints, measurements and debug commands (read before changing code; Chinese only for now) |
 | `docs/card-*.png` | Example output from `--dump` |
 | `Makefile` | Build script with the `dump` / `run` / `install-service` / `uninstall-service` targets |
 | `pw-mpris-visualcard.service` | systemd user service template, rendered by `make install-service` |
@@ -223,29 +193,15 @@ When scaling up, multiply **both dimensions** and keep `W:H = 2:3`; the side mar
 | `lib/pw-video-simple-interface/` | Git submodule: the PipeWire video-node library (registration, buffers, frame-rate negotiation) |
 | `src/main.cpp` | Module wiring and command-line parsing |
 
-## Modifying the code
+## Contributing
 
-Read [docs/internals.md](docs/internals.md) first (Chinese only for now). It records the rendering constraints this project depends on and links the video-node library's own notes for the PipeWire side. PipeWire code no longer lives here: change the library and bump the submodule pointer.
+- Behaviour changes: include the command and its output.
+- Performance claims: include the measurement. Unverified numbers do not go into the documentation.
+- Read [docs/internals.md](docs/internals.md) before changing the rendering path. The PipeWire side lives in [`pw-video-simple-interface`](https://github.com/zlinux-live-util/pw-video-simple-interface).
+- State how the work was produced (recommended, not required), so it can be traced.
+- Review, verification and long-term maintenance of a patch rest with its submitter.
 
-## LLM involvement
-
-**This project is developed with LLM assistance**; both the code and the documentation contain LLM output.
-
-That imposes a straightforward methodological rule: every technical claim in the documentation must be reproducible on real hardware. The figures in `docs/internals.md` (0.431 ms per rotation, the 7.5Hz cache refresh rate, 22% off a whole frame, …) all come from measurements on this machine rather than from model estimates, and claims that cannot be reproduced do not make it into the documentation. The rule applies equally to models and to humans — which is why the tables retain their A/B comparisons and reproduction commands.
-
-## LLM contributions welcome
-
-Patches written or assisted by an LLM are welcome; review looks at the evidence, not at whether the author is a human or a model. To keep review tractable:
-
-- **Include measured evidence.** For behaviour changes, give the command and its output; for performance changes, include the microbenchmark code and data. Write the microbenchmark before touching a hot loop — that is how the “three-shear is slower” and “fixed-point is 43% faster” results in [docs/internals.md](docs/internals.md) were established.
-- **Do not add unverified numbers.** Performance figures with no measurement behind them do not belong in the documentation; better to leave them out.
-- **Respect the documented constraints.** Those eight hard requirements were paid for in debugging time; a proposal that contradicts one needs A/B evidence first, not a code change first.
-- **State how the work was produced** (recommended, not required) — for example `Co-authored-by: <model>`, or a note on which parts were generated, so it can be traced later.
-- **The submitter is responsible.** Review, verification and long-term maintenance rest with the submitter; an LLM cannot carry any of that.
-
-Not accepted: performance claims with no reproduction path, “optimisations” based on intuition alone, and documentation rewrites that drop preconditions to read more smoothly.
-
-There is no CLA, and no LLM attribution is required.
+There is no CLA.
 
 ## License
 
