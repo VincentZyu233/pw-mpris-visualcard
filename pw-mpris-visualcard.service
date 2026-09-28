@@ -1,0 +1,56 @@
+# pw-mpris-visualcard —— systemd 用户服务（模板文件）
+#
+# 本文件含两个占位符，直接复制到 ~/.config/systemd/user/ 无法启动：
+#   @REPO@  仓库的绝对路径（WorkingDirectory / Documentation / ExecStart 都用它）
+#   @ARGS@  启动参数
+#
+# 用 `make install-service` 渲染并安装到 ~/.config/systemd/user/：
+#   make install-service                                   # 用默认参数
+#   make install-service SERVICE_ARGS="--size 360x360"     # 覆盖启动参数
+#   make uninstall-service                                 # 卸载
+#
+# 手动安装也可以，先把两个占位符替换成实际值即可；不替换时 systemd 在加载阶段就会
+# 判定 unit 配置致命错误并拒绝启动：
+#   WorkingDirectory= path is not absolute: @REPO@
+#   Unit configuration has fatal error, unit will not be started.
+
+[Unit]
+Description=pw-mpris-visualcard — 把正在播放的音乐渲染成 PipeWire 视频节点
+Documentation=file://@REPO@/README.md
+Documentation=file://@REPO@/README.zh-CN.md
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO@
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+# --node 要和 OBS 里「PipeWire Video」源选的名称一致。
+# --size 是输出尺寸，可以写 WxH。版式全部按「高度」等比缩放，宽度只决定左右留白。
+#   放大就两个数一起乘：保持 W:H = 2:3，左右留白就一直是 4%。
+#     OBS 1080p 画布下常见的几档（高度 = 卡片的绝对高度）：
+#       360x540  → 占画布高 50%   CPU ≈ 3.6%
+#       400x600  → 占画布高 56%   CPU ≈ 4.2%
+#       460x690  → 占画布高 64%   CPU ≈ 5.5%   ← 默认值
+#       480x720  → 占画布高 67%   CPU ≈ 6.3%
+#   以上都含封面自转。关掉自转（--spin 0）整帧开销还能再砍掉约 60%。
+#   方形画布（如 540x540）横向必然空掉一大截 —— 圆形封面被纵向预算卡死，横向自然富余。
+#   记得把 OBS 里那个源的宽高设成和这里一致，才是 1:1 不被缩放。
+# --fps 是帧率上限（默认 30）。CPU 开销大致与帧率成正比：
+#   --fps 15 ≈ 减半，--fps 10 ≈ 三分之一。消费者可以协商到更低，但不会超过这个上限。
+# --lyrics N 显示 N 行同步歌词（当前句固定在第一行槽位，高亮）。0 = 关闭。
+#   歌词来自 MPRIS 的 xesam:asText（LRC）；播放器没给就是没有，不会显示空行。
+#   开歌词会把封面从 68vh 缩到 54vh 给它让位。
+# 注意：本服务设了 PrivateTmp=yes，--dump 的输出会落在服务私有的 /tmp 里而取不出来。
+#   调版面请直接在终端跑 --dump，不要写进这里。
+ExecStart=@REPO@/pw-mpris-visualcard-native @ARGS@
+Restart=always
+RestartSec=2
+
+# 只输出视频给 PipeWire，不需要任何额外能力
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=default.target
