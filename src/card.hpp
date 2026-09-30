@@ -11,6 +11,7 @@
 #include <memory>
 #include <string>
 
+#include "fx.hpp"     // SpectrumFx, the optional ring post-processing
 #include "types.hpp"
 
 namespace oms {
@@ -36,6 +37,11 @@ class Card {
    *  fixed storage, so the caller's buffer need not outlive the frame. Called from the same
    *  thread as render(). Ignored unless --viz is on. */
   void setSpectrum(const float* levels, int count);
+
+  /** The height currently drawn for bar `i`, after any post-processing, as a fraction of the
+   *  ring's radial band. Diagnostic: lets a harness or a test check the displayed spectrum without
+   *  having to reverse-engineer the layout out of pixels. */
+  float level(int i) const { return (i >= 0 && i < vizCount_) ? viz_[i] : 0.0f; }
 
   int width() const { return cfg_.width; }
   int height() const { return cfg_.height; }
@@ -88,6 +94,9 @@ class Card {
                          int side, double radius, double angle);
 
   std::unique_ptr<Impl> impl_;
+
+  /** Ring post-processing (--viz-fx). Holds the per-band state the temporal stages need. */
+  SpectrumFx fx_;
 
   double spinAngle_ = 0.0;
   double vizAngle_ = 0.0;  // bar ring rotation: opposite to the cover, and slower

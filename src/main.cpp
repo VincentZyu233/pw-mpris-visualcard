@@ -8,7 +8,6 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -57,6 +56,15 @@ void usage() {
       "  --viz 0|1       Radial spectrum ring around the cover, default 0 (off)\n"
       "  --viz-bars N    Bars in the ring, 8..256, default 72\n"
       "  --viz-source S  Capture this PipeWire audio node / app instead of the MPRIS player\n"
+      "  --viz-fx 0|1    Ring post-processing: cava-style bar motion, band shaping, auto-gain.\n"
+      "                  default 0 (off) -- the ring then shows the measured spectrum unchanged\n"
+      "  --viz-gain DB   Expansion in dB before everything else, default 0\n"
+      "  --viz-gravity N 0..100, how heavy the bars are: slower fall, more momentum.\n"
+      "                  Cava's noise_reduction; 10 or below turns it off. Default 77\n"
+      "  --viz-shape N   0..100, blend towards a blur along the band axis, default 50.\n"
+      "                  At 100 a lone tall band becomes a three-band mound\n"
+      "  --viz-norm MS   Sliding-window auto-gain length in ms, default 2000, 0 = off.\n"
+      "                  Keeps the ring filling its band across quiet and loud passages\n"
       "  --idle last|hide  Keep the last track after playback stops, default hide\n"
       "  --node NAME     PipeWire node name, default pw-mpris-visualcard\n"
       "  --desc TEXT     Node description, default Music Card\n"
@@ -66,6 +74,8 @@ void usage() {
       "  --help\n");
 }
 
+/** Returns true when the program should run, false when it already did its job (--help) and
+ *  should exit successfully. Anything wrong with the arguments throws. */
 bool parseArgs(int argc, char** argv, Config& cfg, std::string& dump, bool& demo,
                bool& verbose) {
   auto next = [&](int& i) -> std::string {
@@ -106,6 +116,16 @@ bool parseArgs(int argc, char** argv, Config& cfg, std::string& dump, bool& demo
       cfg.vizBars = std::clamp(std::stoi(next(i)), 8, Card::kMaxVizBars);
     } else if (a == "--viz-source") {
       cfg.vizSource = next(i);
+    } else if (a == "--viz-fx") {
+      cfg.vizFx = next(i) != "0";
+    } else if (a == "--viz-gain") {
+      cfg.vizGainDb = std::clamp(std::stod(next(i)), -24.0, 24.0);
+    } else if (a == "--viz-gravity") {
+      cfg.vizGravity = std::clamp(std::stod(next(i)) / 100.0, 0.0, 1.0);
+    } else if (a == "--viz-shape") {
+      cfg.vizShape = std::clamp(std::stod(next(i)) / 100.0, 0.0, 1.0);
+    } else if (a == "--viz-norm") {
+      cfg.vizNormMs = std::clamp(std::stod(next(i)), 0.0, 60000.0);
     } else if (a == "--idle") {
       cfg.idleLast = next(i) == "last";
     } else if (a == "--node") {
@@ -119,9 +139,9 @@ bool parseArgs(int argc, char** argv, Config& cfg, std::string& dump, bool& demo
     } else if (a == "--verbose" || a == "-v") {
       verbose = true;
     } else {
-      std::fprintf(stderr, "unknown argument: %s\n", a.c_str());
-      usage();
-      return false;
+      // Thrown rather than "print and stop": returning here used to exit 0, which under
+      // Restart=always turns a typo into a silent restart loop that reports SUCCESS.
+      throw std::runtime_error("unknown argument: " + a);
     }
   }
   return true;
@@ -397,7 +417,36 @@ class App {
         tap_->stop();
       }
     }
-    card_.render(frame.cr(), np, cover.get(), now);
+
+    // The ring's temporal stages -- the motion model and the auto-gain -- need history, so a
+    // single frame cannot show them: on the first frame a falling bar is still anchored to its
+    // peak. Render a short run first and keep the last, which puts the dump in the same state a
+    // viewer would see. The run ends exactly at `now`, so with --viz-fx off it is still the single
+    // frame it always was.
+    //
+    // SpectrumFx::apply() rewrites the buffer it is handed, so every frame of the run needs the
+    // measurement written back first; the analyser's levels are a stable snapshot once the tap is
+    // stopped. --demo re-derives its spectrum instead, which also keeps it in step with the frame
+    // timestamp.
+    const bool fxOn = cfg_.showViz && cfg_.vizFx;
+    std::vector<float> still;
+    if (fxOn && !demo_ && analyser_) {
+      still.assign(analyser_->levels(), analyser_->levels() + analyser_->bandCount());
+    }
+    const int warm = fxOn ? 12 : 1;
+    int64_t t = now - (warm - 1) * 33;
+    for (int i = 0; i < warm; ++i) {
+      if (fxOn) {
+        if (demo_) {
+          const std::vector<float> s = demoSpectrum(cfg_.vizBars, t);
+          card_.setSpectrum(s.data(), static_cast<int>(s.size()));
+        } else if (i && !still.empty()) {
+          card_.setSpectrum(still.data(), static_cast<int>(still.size()));
+        }
+      }
+      card_.render(frame.cr(), np, cover.get(), t);
+      t += 33;
+    }
     if (!frame.writePng(path)) {
       std::fprintf(stderr, "PNG write failed: %s (%s)\n", path.c_str(),
                    cairo_status_to_string(cairo_surface_status(frame.surface())));
@@ -443,7 +492,10 @@ int main(int argc, char** argv) {
   try {
     if (!parseArgs(argc, argv, cfg, dumpPath, demo, verbose)) return 0;
   } catch (const std::exception& e) {
-    std::fprintf(stderr, "argument error: %s\n", e.what());
+    // The message names the offending flag; the usage text then shows what the current build
+    // actually accepts, which matters when an argument was renamed or removed.
+    std::fprintf(stderr, "argument error: %s\n\n", e.what());
+    usage();
     return 2;
   }
 

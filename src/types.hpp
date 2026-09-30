@@ -52,6 +52,14 @@ struct Config {
   bool showViz = false;        // radial spectrum ring around the cover (--viz)
   int vizBars = 72;            // bars in the ring (--viz-bars)
   std::string vizSource;       // audio target override (--viz-source); empty = the MPRIS player
+  // Display-side post-processing for the ring (--viz-fx), in the spirit of cava's [cava] section.
+  // All of it is skipped unless vizFx is set, so the ring keeps showing the analyser's own levels.
+  // This changes how levels are drawn, never the audio: see fx.hpp.
+  bool vizFx = false;
+  double vizGainDb = 0.0;      // --viz-gain, dB of expansion applied before everything else
+  double vizGravity = 0.77;    // --viz-gravity: cava's noise_reduction, how heavy the bars are
+  double vizShape = 0.5;       // --viz-shape, 0..1: blend towards a blur along the band axis
+  double vizNormMs = 2000.0;   // --viz-norm, sliding-window auto-gain window, 0 = off
   bool idleLast = false;       // true = keep the last track after playback stops
   std::string nodeName = "pw-mpris-visualcard";
   std::string nodeDescription = "Music Card";

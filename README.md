@@ -132,6 +132,11 @@ systemctl --user restart pw-mpris-visualcard    # after changing the arguments
 | `--viz 0\|1` | `0` | Radial spectrum ring around the cover. **Off by default, and with it off the layout is byte-for-byte what it always was** |
 | `--viz-bars N` | `72` | Bars in the ring, `8`..`256` |
 | `--viz-source NAME` | | Capture this PipeWire audio node / app instead of the one MPRIS names. Use it when the automatic match fails; the node name works |
+| `--viz-fx 0\|1` | `0` | Ring post-processing: ballistics, band-axis shaping, sliding-window auto-gain. **Off by default — with it off the ring shows the measured spectrum unchanged** |
+| `--viz-gain DB` | `0` | Expansion in dB, applied before everything else |
+| `--viz-gravity N` | `77` | How heavy the bars are, `0`..`100`; at `10` or below the motion model is off (cava's own threshold). This is cava's `noise_reduction`, which is smoothing strength and **not** noise removal |
+| `--viz-shape N` | `50` | `0`..`100`, blend towards a 1-2-1 blur along the band axis. At `100` one lone tall band becomes a three-band mound |
+| `--viz-norm MS` | `2000` | Sliding-window auto-gain length; `0` turns it off |
 | `--idle last\|hide` | `hide` | Keep the last track on screen after playback stops |
 | `--node NAME` | `pw-mpris-visualcard` | PipeWire node name; this is the value behind the OBS dropdown entry. Duplicate names get an `(id)` suffix to tell them apart |
 | `--desc TEXT` | `Music Card` | Node description. **This is what the OBS dropdown displays**, not `--node` |
@@ -161,11 +166,37 @@ How it gets its input:
 3. An input stream is pointed at that node's `object.serial`, which makes PipeWire hand over the node's **monitor** ports — the signal that player submitted, before any device mixer, volume or effect.
 4. A 2048-point Hann-windowed FFT folds that into logarithmically spaced bands, and the bars grow outward.
 
-Nothing is done to the audio on the way: no gain, no noise gate, no AGC, no smoothing. The captured stream is already the player's own signal, and any level processing on top would draw a spectrum the music does not have. Bar height comes from a fixed dBFS window, so it stays proportional to what is actually playing and comparable between tracks.
+Nothing is done to the audio on the way: no gain, no noise gate, no AGC, no smoothing. The captured stream is already the player's own signal, and any level processing on top would draw a spectrum the music does not have. Bar height comes from a fixed dBFS window, so it stays proportional to what is actually playing and comparable between tracks. (All of that is display-side and only exists behind `--viz-fx`, off by default.)
 
 Layout notes: the ring needs clearance all the way round, and the bottom of the ring is exactly where the text starts, so enabling it widens the gap above the text rather than letting the bars grow over the first line. The ring turns the opposite way from the cover and a quarter as fast, so the two read as separate motions.
 
 If no node matches, the ring stays empty with its base circle showing and one line is printed naming the problem — nothing is silently blank. `--demo --viz 1` renders a stand-in spectrum, so the layout can be tuned with no player at all.
+
+### Ring post-processing
+
+`--viz-fx 1` turns on a chain whose bar motion is taken from [cava](https://github.com/karlstav/cava)'s `cavacore.c`, constants included. It is off by default, and with it off the bars are exactly what the analyser measured.
+
+```bash
+./pw-mpris-visualcard-native --viz 1 --viz-fx 1                 # cava motion, default weight
+./pw-mpris-visualcard-native --viz 1 --viz-fx 1 --viz-gravity 95   # heavier, slower fall
+./pw-mpris-visualcard-native --viz 1 --viz-fx 1 --viz-shape 100     # maximum mound shaping
+```
+
+| Stage | Flag | What it does |
+| --- | --- | --- |
+| Expansion | `--viz-gain DB` | Adds dB to every band. Levels are allowed past full height and clamped per bar when drawn, so bands keep their relative spacing instead of flattening at the top |
+| Gravity | `--viz-gravity N` | Cava's motion model. On a **rise** the measurement is used directly — no attack smoothing at all. On a **fall** the measurement is discarded and the bar is recomputed from the peak of its current rising run, falling on a squared curve, so a falling bar is a smooth synthetic line and cannot jitter. An integral then adds momentum. This is why it looks like it has weight |
+| Shaping | `--viz-shape N` | A 1-2-1 blur along the band axis, so a single loud band becomes a small three-band mound instead of an isolated spike. Edges replicate, so the ring's first and last bars are not smeared together |
+| Auto-gain | `--viz-norm MS` | Scales the ring so it keeps filling its band across quiet and loud passages. The reference is the loudest frame inside the window and is itself smoothed, so the gain does not pump. Relative dynamics between bands are untouched — it is a scalar |
+
+Two things worth knowing:
+
+- There is deliberately **no noise reduction and no noise gate**. The captured stream is the player's own output, so everything in it is the music, and a gate can only remove music and clip transients. What the ring gets instead is an auto-gain that scales the whole ring rather than deciding which bands deserve to exist. (Cava has a knob called `noise_reduction`; it is smoothing strength, and this project calls it `--viz-gravity` so it is not misread.)
+- Cava's frame-rate compensation is a single `pow(66/fps, 2.5)` term which holds down to about 20 fps and then collapses — the whole fall finishes inside one frame. `dt` is therefore clamped for the motion model so a very low negotiated frame rate makes the fall slower rather than making the bars blink.
+
+`--dump` renders a short run before the final frame when `--viz-fx` is on, because the motion model and the auto-gain both need history and the first frame is not representative.
+
+Deliberately not implemented: cava's round bar caps, colour gradients and invert, since they work against this project's monochrome hard-edged look.
 
 The capture side, the matching rules, and the measurements behind the numbers are in [docs/internals.md](docs/internals.md).
 
@@ -184,6 +215,8 @@ make dump                                                    # one PNG from fake
 | RSS | 40–70 MB (scales with output size) |
 | Private (anonymous) memory | **6–25 MB** (grows with the cover cache and the cairo/pango glyph caches) |
 | CPU | **≈5.5% of one core** (`460x690` at 30fps, of which cover rotation accounts for 3.5 points) |
+| `--viz 1` adds | **≈0.33%** of one core (measured: +0.10 ms/frame drawing, +0.018 ms/frame FFT) |
+| `--viz-fx 1` adds | **≈0.001%** of one core — the chain itself is free (0.0005 ms/frame measured); ring drawing scales with how much of the band is filled |
 | With no consumer attached | zero frames pushed, **≈0.25%** CPU |
 | Child processes | **0** (persistent D-Bus connection) |
 
@@ -224,6 +257,7 @@ When scaling up, multiply **both dimensions** and keep `W:H = 2:3`; the side mar
 | `src/mpris.{hpp,cpp}` | sdbus-c++ persistent connection + sampling thread + LRC parsing |
 | `src/audio.{hpp,cpp}` | PipeWire capture: registry, player-name matching, raw mono sample ring (`--viz`) |
 | `src/analyser.{hpp,cpp}` | FFT, window, band folding, fixed dB window (`--viz`) |
+| `src/fx.{hpp,cpp}` | Optional ring post-processing: expansion, cava-style bar motion, band shaping, sliding-window auto-gain (`--viz-fx`) |
 | `src/card.{hpp,cpp}` | Layout rendering with cairo + pango |
 | `lib/pw-video-simple-interface/` | Git submodule: the video node (registration, buffers, frame-rate negotiation) plus the cairo helpers (frame, text, asset cache, HTTP) |
 | `src/main.cpp` | Module wiring and command-line parsing |

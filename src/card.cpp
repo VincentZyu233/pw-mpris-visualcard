@@ -61,9 +61,11 @@ constexpr double kLyricMarginTopPx = 3.0;
 
 // Radial spectrum ring (--viz). Read only while the ring is on, so with it off the layout is
 // bit-for-bit what it always was.
-constexpr double kVizBandFrac = 0.035;   // radial thickness, as a fraction of height
-constexpr double kVizBandMinPx = 8.0;    // and the bounds it is clamped to, at 360px
-constexpr double kVizBandMaxPx = 20.0;
+// Radial thickness. Bars are grown 1.5x over the first cut of this feature: at the old value the
+// ring read as a thin fringe around the cover rather than as a spectrum.
+constexpr double kVizBandFrac = 0.052;   // radial thickness, as a fraction of height
+constexpr double kVizBandMinPx = 12.0;   // and the bounds it is clamped to, at 360px
+constexpr double kVizBandMaxPx = 30.0;
 constexpr double kVizClearPx = 1.0;      // clearance between the progress ring and the bars
 constexpr double kVizDuty = 0.68;        // bar width as a fraction of its angular slot
 constexpr double kVizMoatPx = 3.0;       // text-free gap between the bar tips and the first line
@@ -163,7 +165,16 @@ int activeLyric(const std::vector<Lyric>& L, int64_t ms) {
 
 }  // namespace
 
-Card::Card(Config cfg) : cfg_(std::move(cfg)), impl_(std::make_unique<Impl>()) {
+Card::Card(Config cfg)
+    : cfg_(std::move(cfg)), impl_(std::make_unique<Impl>()), fx_(cfg_.vizBars) {
+  SpectrumFxOptions fx;
+  fx.enabled = cfg_.vizFx;
+  fx.gainDb = cfg_.vizGainDb;
+  fx.gravity = cfg_.vizGravity;
+  fx.shape = cfg_.vizShape;
+  fx.normMs = cfg_.vizNormMs;
+  fx_.setOptions(fx);
+
   hasBg_ = parseBg(cfg_.bg, bgR_, bgG_, bgB_);
 
   const double W = cfg_.width, H = cfg_.height;
@@ -365,16 +376,17 @@ void Card::drawSpectrum(cairo_t* cr, double cx, double cy, double coverR) {
   for (int i = 0; i < n; ++i) {
     const double v = viz_[i];
     if (v <= 0.0f) continue;  // silence: leave a gap rather than a stub
-    const double a = vizAngle_ + slot * i;
-    const double r1 = r0 + m_.vizBand * v;
+    // Levels may exceed 1 after --viz-gain or the auto-gain; the band is the hard ceiling.
+    const double r1 = r0 + m_.vizBand * std::min(v, 1.0);
     // The sides are chords, not arcs. At this radius and slot width the arc's deviation from the
     // chord is a fraction of a pixel, and measured over 72 bars a chord is 1.2x the speed of two
     // cairo_arc calls (0.24 vs 0.29 ms). cos/sin of the slot are constant, so each bar costs two
     // trig calls and four multiplies rather than eight.
     //
-    // One fill per bar, not one fill for the whole ring: measured the other way round, batching
-    // all 72 quads into a single path and filling once is 1.4x SLOWER (0.34 vs 0.25 ms), because
-    // cairo tessellates the combined path as one unit while each 4-gon on its own is trivial.
+    // One fill per bar, not one fill for the whole ring: measured the other way round, batching all
+    // 72 quads into a single path and filling once is 1.4x SLOWER (0.34 vs 0.25 ms), because cairo
+    // tessellates the combined path as one unit while each 4-gon on its own is trivial.
+    const double a = vizAngle_ + slot * i;
     const double ca = std::cos(a), sa = std::sin(a);
     cairo_new_path(cr);
     cairo_move_to(cr, cx + (ca * ch + sa * sh) * r0, cy + (sa * ch - ca * sh) * r0);
@@ -537,9 +549,13 @@ void Card::render(cairo_t* cr, const NowPlaying& np, cairo_surface_t* cover,
   const double k = H / kBaseSize;
   const Track& t = np.track;
 
+  // One dt for the frame: the cover spin, the ring's counter-rotation and the --viz-fx chain (bar
+  // fall, auto-gain) all advance on it, so they cannot drift apart.
+  const double dt =
+      lastRenderAt_ != 0 ? static_cast<double>(nowMs - lastRenderAt_) / 1000.0 : 0.0;
+
   // Cover spin: frozen while paused
   if (lastRenderAt_ != 0 && np.playing() && cfg_.spinSeconds > 0) {
-    const double dt = static_cast<double>(nowMs - lastRenderAt_) / 1000.0;
     if (dt > 0 && dt < 1.0) {
       const double turn = dt / cfg_.spinSeconds * 2 * kPi;
       spinAngle_ += turn;
@@ -671,7 +687,10 @@ void Card::render(cairo_t* cr, const NowPlaying& np, cairo_surface_t* cover,
   }
 
   /* ---------------- radial spectrum ---------------- */
-  if (cfg_.showViz) drawSpectrum(cr, cx, cy, coverR);
+  if (cfg_.showViz) {
+    fx_.apply(viz_, vizCount_, dt);
+    drawSpectrum(cr, cx, cy, coverR);
+  }
 
   /* ---------------- progress arc ---------------- */
   if (cfg_.showProgress && t.duration > 0) {
