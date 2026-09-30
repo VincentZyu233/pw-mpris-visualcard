@@ -1,4 +1,4 @@
-name: Package & Release
+name: Artifact & Release
 
 on:
   push:
