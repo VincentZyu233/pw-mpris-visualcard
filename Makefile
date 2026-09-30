@@ -40,7 +40,7 @@ UNIT         := pw-mpris-visualcard.service
 UNIT_DIR     ?= $(HOME)/.config/systemd/user
 SERVICE_ARGS ?= --node pw-mpris-visualcard --size 460x690 --fps 30 --lyrics 3
 
-.PHONY: all clean dump run install-service uninstall-service
+.PHONY: all clean dump run install-service uninstall-service compile-db
 
 all: $(TARGET)
 
@@ -77,6 +77,26 @@ uninstall-service:
 	rm -f $(UNIT_DIR)/$(UNIT)
 	systemctl --user daemon-reload
 	@echo "Uninstalled $(UNIT_DIR)/$(UNIT)"
+
+# Emit a compilation database for clangd and other editor tooling. The include paths come from the
+# same pkg-config calls the build uses, so nothing is hardcoded per distribution and an editor
+# reading this file sees exactly the flags the compiler gets.
+compile-db:
+	@{ printf '['; \
+	   sep=''; \
+	   for src in $(SRC); do \
+	     printf '%s{"directory":"%s","file":"%s","command":"$(CXX) $(CXXFLAGS) -MMD -MP -c -o %s %s"}' \
+	       "$$sep" "$(CURDIR)" "$$src" "$${src%.cpp}.o" "$$src"; \
+	     sep=','; \
+	   done; \
+	   for src in $(PWNODE_SRC); do \
+	     printf '%s{"directory":"%s","file":"%s","command":"$(CXX) $(CXXFLAGS) -MMD -MP -c -o build/pwvideo/%s %s"}' \
+	       "$$sep" "$(CURDIR)" "$$src" "$${src#$(PWNODE_DIR)/%.cpp}" "$$src"; \
+	     sep=','; \
+	   done; \
+	   printf ']\n'; \
+	 } > compile_commands.json
+	@echo "Wrote compile_commands.json ($$(grep -o '"file"' compile_commands.json | wc -l) entries)"
 
 clean:
 	rm -f $(OBJ) $(DEP) $(TARGET)

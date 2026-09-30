@@ -1,0 +1,23 @@
+# Editor / tooling configuration.
+#
+# clangd does not run pkg-config and does not read the Makefile, so without help it cannot resolve
+# the PipeWire headers or the submodule's extras/, and every one of those reads as "file not found"
+# followed by a cascade of "unknown type name" on the pwvideo:: types.
+#
+# Two mechanisms, because neither alone is reliable everywhere:
+#   * `make compile-db` writes a compilation database carrying the real build's flags. Those are the
+#     only source of the system include paths, which differ per distribution and which this project
+#     only ever takes from pkg-config.
+#   * The submodule paths are spelled out below as well, relative to the project root. They live in
+#     the repository, so they are the same on every distribution and are safe to hardcode; this
+#     keeps editor tooling working even when compile_commands.json has not been generated.
+CompileFlags:
+  Add:
+    - -Ilib/pw-video-simple-interface/src
+    - -Ilib/pw-video-simple-interface/extras
+
+# The project builds every src/*.cpp, so keep third-party and generated code out of the analysis.
+Diagnostics:
+  Exclude:
+    - "lib/.*"
+    - "build/.*"
