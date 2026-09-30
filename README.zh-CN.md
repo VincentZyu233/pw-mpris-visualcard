@@ -11,6 +11,7 @@
 | 状态采样 | 播放器的 MPRIS 接口（D-Bus） | `NowPlaying` 快照：标题、歌手、专辑、进度、歌词、封面 URL | `mpris`，常驻 D-Bus 连接，不 fork 子进程 |
 | 素材获取 | 封面 URL | cairo 表面（LRU 缓存，最多 3 张） | 后台线程 + 子模块的 `AssetCache` |
 | 版面渲染 | 快照 + 封面表面 | BGRA 帧（预乘 alpha） | `card`，cairo + pango |
+| 频谱（可选） | 播放器自己的 PipeWire monitor 流 | 72 段频段电平 | `audio` + `analyser`，libpipewire + 2048 点 FFT |
 | 视频输出 | BGRA 帧 | `Stream/Output/Video` 节点 | [`pw-video-simple-interface`](https://github.com/zlinux-live-util/pw-video-simple-interface)，libpipewire |
 
 各阶段都在同一进程内通过内存传递数据，进程私有内存 6–25 MB。
@@ -22,6 +23,7 @@
 - 同步歌词读取 MPRIS 的 `xesam:asText`（LRC）。当前句固定在首行槽位并高亮，整块不跳动。
 - 封面自转，暂停时冻结。
 - 进度环、时间、专辑名可分别开关。
+- 可选的径向频谱环（`--viz`，**默认关闭**）：经 PipeWire 定位播放器自己的音频节点，分析该原始流。单色、硬朗、不压到文字，且与封面反向转动。
 - 尺寸任意（`WxH`），版式按高度等比缩放。
 - 帧率上限可调；消费者可以协商到更低，不会超过上限。
 - 调版面无需打开 OBS：`--dump` 直接输出 PNG。
@@ -127,6 +129,9 @@ systemctl --user restart pw-mpris-visualcard    # 改过参数后重启才生效
 | `--album 0\|1` | `0` | 歌手后追加专辑名 |
 | `--lyrics N` | `0` | 歌词行数，`0` 为关闭 |
 | `--spin SEC` | `24` | 封面自转一圈的秒数，`0` 为不转 |
+| `--viz 0\|1` | `0` | 封面周围的柱状频谱环。**默认关闭；关闭时版面与功能加入之前逐字节一致** |
+| `--viz-bars N` | `72` | 环上的柱数，范围 `8`..`256` |
+| `--viz-source NAME` | | 不按 MPRIS 推断，直接抓这个 PipeWire 音频节点 / 应用。自动匹配失败时用它，节点名即可 |
 | `--idle last\|hide` | `hide` | 停止播放后是否保留最后一首 |
 | `--node NAME` | `pw-mpris-visualcard` | PipeWire 节点名，也是 OBS 下拉项背后的取值。同名节点会各自带 `(id)` 后缀区分 |
 | `--desc TEXT` | `Music Card` | 节点描述。**OBS 下拉框里显示的就是它**，不是 `--node` |
@@ -134,6 +139,35 @@ systemctl --user restart pw-mpris-visualcard    # 改过参数后重启才生效
 | `--dump FILE` | | 采样一次渲染为 PNG 后退出 |
 | `--demo` | | 使用假数据，不连接 D-Bus |
 | `--help`, `-h` | | 打印参数简表 |
+
+### 频谱环
+
+`--viz 1` 在封面周围画一圈径向柱子，颜色与进度环同一套单色。默认关闭，不显式打开就不会动到版面。
+
+![带频谱环的卡片](docs/card-viz-460x690.png)
+
+`--size 460x690 --viz 1 --lyrics 4 --time 1 --album 1`，实机播放时截取。环上的信号就是播放器自己的音频：底部较长的柱是低音，顶部较短的柱是几乎空的空气频段。
+
+```bash
+./pw-mpris-visualcard-native --viz 1                          # 跟随 MPRIS 里的播放器
+./pw-mpris-visualcard-native --viz 1 --viz-bars 96             # 更密的环
+./pw-mpris-visualcard-native --viz 1 --viz-source musicfox     # 钉死目标
+```
+
+输入是怎么来的：
+
+1. MPRIS 告诉当前是哪个播放器在播。
+2. 从 PipeWire 注册表枚举音频节点，与该名字匹配。
+3. 把输入流指向该节点的 `object.serial`，PipeWire 就会交出它的 **monitor** 端口——也就是这个播放器在任何设备混音、音量、效果之前送出的信号。
+4. 2048 点 Hann 窗 FFT 折叠成对数间隔的频段，柱子向外生长。
+
+音频进来后**什么都不做**：不加增益、不加噪声门、不做 AGC、不做平滑。抓到的本来就是播放器自己的信号，再加一道电平处理，画出来的就不是音乐本身的频谱了。柱高来自一个**固定**的 dB 窗口，所以与实际播放量成正比，曲目之间也可比。
+
+版面方面：环需要整圈留白，而环的下缘正是文字开始的地方，所以开启时是把封面上方的间距**撑开**，而不是让柱子长到第一行文字上。环与封面反向、且慢 4 倍，读起来是两个独立的运动。
+
+匹配不到节点时，环会留空、只显示底圈，并打印一行指明问题的提示——不会静默空白。`--demo --viz 1` 会渲染一条假频谱，因此没有播放器也能调版面。
+
+抓取侧、匹配规则与文中数字的实测来源，见 [docs/internals.md](docs/internals.md)。
 
 ### 调版面无需打开 OBS
 
@@ -175,6 +209,8 @@ make dump                                                    # 假数据输出�
 - `--fps 24`：约省六分之一。
 - 把尺寸高度调小一档。
 
+`--viz 1` 的增量开销实测约 **0.33% 单核**（`460x690` @30fps，72 柱：绘制 +0.10 ms/帧、FFT +0.018 ms/帧），且没有消费者连接时不抓音频、不做 FFT。
+
 ## 目录结构
 
 | 路径 | 内容 |
@@ -184,13 +220,16 @@ make dump                                                    # 假数据输出�
 | `LICENSE` | MIT 许可证全文 |
 | `docs/internals.md` | 渲染侧约束、实测数据与调试命令（改代码前先读，目前仅中文） |
 | `docs/card-*.png` | `--dump` 输出的效果图 |
-| `Makefile` | 构建脚本，含 `dump` / `run` / `install-service` / `uninstall-service` 目标 |
+| `Makefile` | 构建脚本，含 `dump` / `run` / `install-service` / `uninstall-service` / `compile-db` 目标 |
 | `pw-mpris-visualcard.service` | systemd 用户服务模板，由 `make install-service` 渲染安装 |
 | `src/types.hpp` | `Track` / `NowPlaying` / `Config` 数据结构 |
 | `src/mpris.{hpp,cpp}` | sdbus-c++ 常驻连接 + 采样线程 + LRC 解析 |
+| `src/audio.{hpp,cpp}` | PipeWire 抓取：注册表、播放器名匹配、原始单声道采样环形缓冲（`--viz`） |
+| `src/analyser.{hpp,cpp}` | FFT、窗函数、频段折叠与固定 dB 窗口（`--viz`） |
 | `src/card.{hpp,cpp}` | cairo + pango 版面绘制 |
 | `lib/pw-video-simple-interface/` | git 子模块：视频节点（注册、缓冲、帧率协商）与 cairo 辅助模块（帧、文字、素材缓存、HTTP） |
 | `src/main.cpp` | 模块组装与命令行解析 |
+| `.clangd` + `make compile-db` | 编辑器工具链：生成编译数据库，让 clangd 能解析 PipeWire 与子模块头文件 |
 
 ## 贡献
 

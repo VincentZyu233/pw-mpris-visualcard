@@ -49,6 +49,9 @@ struct Config {
   bool showAlbum = false;      // album name
   int lyricLines = 0;          // 0 = no lyrics; N = show N lines
   double spinSeconds = 24;     // seconds per full cover rotation, 0 = no rotation
+  bool showViz = false;        // radial spectrum ring around the cover (--viz)
+  int vizBars = 72;            // bars in the ring (--viz-bars)
+  std::string vizSource;       // audio target override (--viz-source); empty = the MPRIS player
   bool idleLast = false;       // true = keep the last track after playback stops
   std::string nodeName = "pw-mpris-visualcard";
   std::string nodeDescription = "Music Card";

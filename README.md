@@ -11,6 +11,7 @@ Renders whatever music is playing on this machine as a card and publishes it to 
 | Playback state | The player's MPRIS interface (D-Bus) | A `NowPlaying` snapshot: title, artist, album, position, lyrics, cover URL | `mpris`, one persistent D-Bus connection, no forked processes |
 | Artwork | Cover URL | cairo surface (LRU cache, up to 3 entries) | background thread + `AssetCache` from the submodule |
 | Layout | Snapshot + cover surface | BGRA frame (premultiplied alpha) | `card`, cairo + pango |
+| Spectrum (optional) | The player's own PipeWire monitor stream | 72 band levels | `audio` + `analyser`, libpipewire + a 2048-point FFT |
 | Video output | BGRA frame | `Stream/Output/Video` node | [`pw-video-simple-interface`](https://github.com/zlinux-live-util/pw-video-simple-interface), libpipewire |
 
 Every stage runs in the same process and passes data in memory; private memory stays at 6–25 MB.
@@ -22,6 +23,7 @@ Every stage runs in the same process and passes data in memory; private memory s
 - Synced lyrics from the MPRIS `xesam:asText` property (LRC). The current line keeps the first slot and is highlighted; the block never jumps.
 - The cover rotates like a record and freezes while paused.
 - Progress ring, elapsed time and album name toggle independently.
+- Optional radial spectrum ring around the cover (`--viz`, **off by default**): finds the player's own audio node through PipeWire and analyses that raw stream. Monochrome, hard-edged, never over the text, and it turns the other way from the cover.
 - Any output size (`WxH`); the layout scales with height.
 - Adjustable frame-rate ceiling; consumers may negotiate lower, never higher.
 - Layout tuning without OBS: `--dump` writes a PNG directly.
@@ -127,6 +129,9 @@ systemctl --user restart pw-mpris-visualcard    # after changing the arguments
 | `--album 0\|1` | `0` | Append the album name after the artist |
 | `--lyrics N` | `0` | Number of lyric lines; `0` disables them |
 | `--spin SEC` | `24` | Seconds per full cover rotation; `0` disables rotation |
+| `--viz 0\|1` | `0` | Radial spectrum ring around the cover. **Off by default, and with it off the layout is byte-for-byte what it always was** |
+| `--viz-bars N` | `72` | Bars in the ring, `8`..`256` |
+| `--viz-source NAME` | | Capture this PipeWire audio node / app instead of the one MPRIS names. Use it when the automatic match fails; the node name works |
 | `--idle last\|hide` | `hide` | Keep the last track on screen after playback stops |
 | `--node NAME` | `pw-mpris-visualcard` | PipeWire node name; this is the value behind the OBS dropdown entry. Duplicate names get an `(id)` suffix to tell them apart |
 | `--desc TEXT` | `Music Card` | Node description. **This is what the OBS dropdown displays**, not `--node` |
@@ -134,6 +139,35 @@ systemctl --user restart pw-mpris-visualcard    # after changing the arguments
 | `--dump FILE` | | Render one sample to a PNG and exit |
 | `--demo` | | Use fake data; do not connect to D-Bus |
 | `--help`, `-h` | | Print a short option summary |
+
+### The spectrum ring
+
+`--viz 1` puts a ring of radial bars around the cover, coloured in the same monochrome as the progress arc. The default is off; nothing about the layout changes unless you ask for it.
+
+![Card with the spectrum ring](docs/card-viz-460x690.png)
+
+`--size 460x690 --viz 1 --lyrics 4 --time 1 --album 1`, captured from real playback. The ring is that player's own audio: longer bars at the bottom are the bass, the short ones at the top are the near-empty air band.
+
+```bash
+./pw-mpris-visualcard-native --viz 1                          # follow the MPRIS player
+./pw-mpris-visualcard-native --viz 1 --viz-bars 96             # denser ring
+./pw-mpris-visualcard-native --viz 1 --viz-source musicfox     # pin the target
+```
+
+How it gets its input:
+
+1. MPRIS says which player is playing.
+2. The audio nodes are enumerated from the PipeWire registry and matched against that name.
+3. An input stream is pointed at that node's `object.serial`, which makes PipeWire hand over the node's **monitor** ports — the signal that player submitted, before any device mixer, volume or effect.
+4. A 2048-point Hann-windowed FFT folds that into logarithmically spaced bands, and the bars grow outward.
+
+Nothing is done to the audio on the way: no gain, no noise gate, no AGC, no smoothing. The captured stream is already the player's own signal, and any level processing on top would draw a spectrum the music does not have. Bar height comes from a fixed dBFS window, so it stays proportional to what is actually playing and comparable between tracks.
+
+Layout notes: the ring needs clearance all the way round, and the bottom of the ring is exactly where the text starts, so enabling it widens the gap above the text rather than letting the bars grow over the first line. The ring turns the opposite way from the cover and a quarter as fast, so the two read as separate motions.
+
+If no node matches, the ring stays empty with its base circle showing and one line is printed naming the problem — nothing is silently blank. `--demo --viz 1` renders a stand-in spectrum, so the layout can be tuned with no player at all.
+
+The capture side, the matching rules, and the measurements behind the numbers are in [docs/internals.md](docs/internals.md).
 
 ### Tuning the layout without opening OBS
 
@@ -184,13 +218,16 @@ When scaling up, multiply **both dimensions** and keep `W:H = 2:3`; the side mar
 | `LICENSE` | Full text of the MIT license |
 | `docs/internals.md` | Rendering constraints, measurements and debug commands (read before changing code; Chinese only for now) |
 | `docs/card-*.png` | Example output from `--dump` |
-| `Makefile` | Build script with the `dump` / `run` / `install-service` / `uninstall-service` targets |
+| `Makefile` | Build script with the `dump` / `run` / `install-service` / `uninstall-service` / `compile-db` targets |
 | `pw-mpris-visualcard.service` | systemd user service template, rendered by `make install-service` |
 | `src/types.hpp` | `Track` / `NowPlaying` / `Config` data structures |
 | `src/mpris.{hpp,cpp}` | sdbus-c++ persistent connection + sampling thread + LRC parsing |
+| `src/audio.{hpp,cpp}` | PipeWire capture: registry, player-name matching, raw mono sample ring (`--viz`) |
+| `src/analyser.{hpp,cpp}` | FFT, window, band folding, fixed dB window (`--viz`) |
 | `src/card.{hpp,cpp}` | Layout rendering with cairo + pango |
 | `lib/pw-video-simple-interface/` | Git submodule: the video node (registration, buffers, frame-rate negotiation) plus the cairo helpers (frame, text, asset cache, HTTP) |
 | `src/main.cpp` | Module wiring and command-line parsing |
+| `.clangd`, `make compile-db` | Editor tooling: a compilation database so clangd resolves the PipeWire and submodule headers |
 
 ## Contributing
 

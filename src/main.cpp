@@ -1,10 +1,12 @@
 // pw-mpris-visualcard native - single process: MPRIS -> cairo rendering -> PipeWire video node
 // Usage: see README.md (English, default) or README.zh-CN.md; --help prints a summary.
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -13,7 +15,9 @@
 
 #include <cairo/cairo.h>
 
+#include "analyser.hpp"
 #include "assetcache.hpp"
+#include "audio.hpp"
 #include "card.hpp"
 #include "cairo_util.hpp"
 #include "mpris.hpp"
@@ -30,6 +34,13 @@ int64_t steadyMs() {
       .count();
 }
 
+constexpr double kPiDemo = 3.14159265358979323846;
+
+/** FFT window for the spectrum, in samples. 2048 at 48 kHz is a 42.7 ms window with 23.4 Hz bins,
+ *  which is what the log-spaced low bands in analyser.cpp are built around; the cost is flat in
+ *  the window size because the hop is a quarter of it. */
+constexpr int kVizFftSize = 2048;
+
 void usage() {
   std::printf(
       "pw-mpris-visualcard (native)\n"
@@ -43,6 +54,9 @@ void usage() {
       "  --album 0|1     Show album, default 0\n"
       "  --lyrics N      Lyric lines, default 0 (off)\n"
       "  --spin SEC      Seconds per full cover rotation, 0 = no rotation, default 24\n"
+      "  --viz 0|1       Radial spectrum ring around the cover, default 0 (off)\n"
+      "  --viz-bars N    Bars in the ring, 8..256, default 72\n"
+      "  --viz-source S  Capture this PipeWire audio node / app instead of the MPRIS player\n"
       "  --idle last|hide  Keep the last track after playback stops, default hide\n"
       "  --node NAME     PipeWire node name, default pw-mpris-visualcard\n"
       "  --desc TEXT     Node description, default Music Card\n"
@@ -86,6 +100,12 @@ bool parseArgs(int argc, char** argv, Config& cfg, std::string& dump, bool& demo
       cfg.lyricLines = std::max(0, std::stoi(next(i)));
     } else if (a == "--spin") {
       cfg.spinSeconds = std::max(0.0, std::stod(next(i)));
+    } else if (a == "--viz") {
+      cfg.showViz = next(i) != "0";
+    } else if (a == "--viz-bars") {
+      cfg.vizBars = std::clamp(std::stoi(next(i)), 8, Card::kMaxVizBars);
+    } else if (a == "--viz-source") {
+      cfg.vizSource = next(i);
     } else if (a == "--idle") {
       cfg.idleLast = next(i) == "last";
     } else if (a == "--node") {
@@ -149,6 +169,27 @@ NowPlaying demoState(int64_t now) {
   return np;
 }
 
+/* ---------------- Demo spectrum (--demo --viz) ---------------- */
+
+/** Stand-in spectrum for --demo, so the ring can be laid out and tuned with no player and no
+ *  audio node. Not an analysis: a falling tilt with three drifting formants and a slow beat. */
+std::vector<float> demoSpectrum(int n, int64_t nowMs) {
+  n = std::max(1, n);
+  std::vector<float> out(static_cast<size_t>(n));
+  const double t = static_cast<double>(nowMs % 9000) / 9000.0;
+  const double beat = 0.70 + 0.30 * std::sin(t * 2 * kPiDemo);
+  for (int i = 0; i < n; ++i) {
+    const double x = static_cast<double>(i) / n;
+    double v = 0.66 - 0.50 * x;
+    v += 0.30 * std::exp(-std::pow((x - 0.06 - 0.03 * std::sin(t * 2 * kPiDemo)) / 0.045, 2.0));
+    v += 0.24 * std::exp(-std::pow((x - 0.33 - 0.06 * std::cos(t * 2 * kPiDemo)) / 0.07, 2.0));
+    v += 0.16 * std::exp(-std::pow((x - 0.70 - 0.05 * std::sin(t * 3 * kPiDemo)) / 0.09, 2.0));
+    v *= beat;
+    out[static_cast<size_t>(i)] = static_cast<float>(std::clamp(v, 0.0, 1.0));
+  }
+  return out;
+}
+
 /* ---------------- Application ---------------- */
 
 class App {
@@ -160,7 +201,15 @@ class App {
         card_(cfg_),
         // capacity 3, the same user agent and timeouts the previous cover loader used
         loader_(pwvideo::AssetCache::Options{3, "Mozilla/5.0 (pw-mpris-visualcard native)"}),
-        frame_(cfg_.width, cfg_.height) {}
+        frame_(cfg_.width, cfg_.height) {
+    // The ring only costs anything when asked for, and --demo never touches PipeWire audio: it
+    // feeds the stand-in spectrum instead.
+    if (cfg_.showViz) {
+      analyser_ = std::make_unique<Analyser>(cfg_.vizBars, kVizFftSize);
+      vizBuf_.resize(16384);  // ~340 ms at 48 kHz: far more than one frame ever needs
+      if (!demo) tap_ = std::make_unique<AudioTap>(2, verbose);
+    }
+  }
 
   int run(const std::string& dumpPath) {
     if (!demo_) {
@@ -172,6 +221,8 @@ class App {
 
     if (!dumpPath.empty()) return dump(dumpPath);
 
+    if (tap_) tap_->start();
+
     artThread_ = std::thread([this] { artLoop(); });
 
     pwvideo::Options opt;
@@ -182,6 +233,11 @@ class App {
     opt.nodeDescription = cfg_.nodeDescription;
     opt.appName = "pw-mpris-visualcard";
     opt.verbose = verbose_;
+    // Capture only while a consumer is actually pulling frames, so a card nobody is watching
+    // costs nothing on the audio side either.
+    opt.onStreaming = [this](bool streaming) {
+      if (tap_) tap_->setActive(streaming);
+    };
     pwvideo::VideoNode video(opt, [this](uint8_t* dst, int stride, int w, int h) {
       renderInto(dst, stride, w, h);
     });
@@ -196,6 +252,8 @@ class App {
     video.run();  // Blocks until SIGINT/SIGTERM
     stopping_.store(true);
     if (artThread_.joinable()) artThread_.join();
+    // Released before the node goes away, so PipeWire's process-global init stays paired.
+    if (tap_) tap_->stop();
     return 0;
   }
 
@@ -212,8 +270,12 @@ class App {
       cover = art_;
     }
     const int64_t now = steadyMs();
+    // One snapshot for the frame: the spectrum and the card then agree on what is playing.
+    const NowPlaying np = current();
+    if (analyser_) updateViz(np, now);
+
     const auto t0 = std::chrono::steady_clock::now();
-    card_.render(frame_.cr(), current(), cover.get(), now);
+    card_.render(frame_.cr(), np, cover.get(), now);
     const auto t1 = std::chrono::steady_clock::now();
 
     const auto t2 = std::chrono::steady_clock::now();
@@ -227,6 +289,57 @@ class App {
                      statRender_ / statN_, statCopy_ / statN_);
       statRender_ = statCopy_ = 0;
       statN_ = 0;
+    }
+  }
+
+  /** Reads the newest samples, folds them into the bands and hands them to the card. Runs once per
+   *  rendered frame, so the spectrum is sampled at exactly the rate it is drawn and needs no thread
+   *  of its own -- and a card with no consumer attached analyses nothing at all. */
+  void updateViz(const NowPlaying& np, int64_t now) {
+    if (demo_) {
+      const std::vector<float> s = demoSpectrum(cfg_.vizBars, now);
+      card_.setSpectrum(s.data(), static_cast<int>(s.size()));
+      return;
+    }
+    if (!tap_) return;
+
+    // --viz-source pins the target; otherwise follow whatever MPRIS says is playing.
+    const std::string want = cfg_.vizSource.empty() ? np.player : cfg_.vizSource;
+    if (want != vizTarget_) {
+      vizTarget_ = want;
+      tap_->setTarget(want);
+    }
+    // Lock-free, so asking once per frame costs nothing. The band edges only move when the graph
+    // renegotiates its rate, which is rare.
+    const int rate = tap_->rate();
+    if (rate != vizRate_) {
+      vizRate_ = rate;
+      analyser_->setRate(rate);
+    }
+    const size_t n = tap_->read(vizBuf_.data(), vizBuf_.size());
+    if (n) {
+      vizSamples_ += n;
+      analyser_->feed(vizBuf_.data(), n);
+    }
+    card_.setSpectrum(analyser_->levels(), analyser_->bandCount());
+  }
+
+  /** Runs the capture path until samples arrive, so a single --dump frame shows the real spectrum
+   *  rather than an empty ring. Bounded: it gives up instead of hanging when nothing is playing. */
+  void warmUpViz(const NowPlaying& np, int budgetMs) {
+    int64_t until = steadyMs() + budgetMs;
+    uint64_t seen = 0;
+    int quiet = 0;
+    while (steadyMs() < until) {
+      updateViz(np, steadyMs());
+      if (vizSamples_ == seen) {
+        ++quiet;
+      } else {
+        quiet = 0;
+        seen = vizSamples_;
+      }
+      if (seen > 0 && quiet >= 3) break;  // a few frames with nothing new is close enough
+      std::this_thread::sleep_for(std::chrono::milliseconds(25));
     }
   }
 
@@ -271,7 +384,20 @@ class App {
     NowPlaying np = current();
     pwvideo::SurfacePtr cover;
     if (!np.track.artUrl.empty()) cover = loader_.get(np.track.artUrl, FH);
-    card_.render(frame.cr(), np, cover.get(), steadyMs() + 1000);
+    const int64_t now = steadyMs() + 1000;
+    if (analyser_) {
+      if (demo_) {
+        const std::vector<float> s = demoSpectrum(cfg_.vizBars, now);
+        card_.setSpectrum(s.data(), static_cast<int>(s.size()));
+      } else if (tap_) {
+        tap_->start();
+        tap_->setActive(true);
+        tap_->setTarget(cfg_.vizSource.empty() ? np.player : cfg_.vizSource);
+        warmUpViz(np, 1500);
+        tap_->stop();
+      }
+    }
+    card_.render(frame.cr(), np, cover.get(), now);
     if (!frame.writePng(path)) {
       std::fprintf(stderr, "PNG write failed: %s (%s)\n", path.c_str(),
                    cairo_status_to_string(cairo_surface_status(frame.surface())));
@@ -287,6 +413,14 @@ class App {
   Card card_;
   MprisClient mpris_;
   pwvideo::AssetCache loader_;
+
+  // Radial spectrum (--viz). Null unless the ring is on.
+  std::unique_ptr<AudioTap> tap_;
+  std::unique_ptr<Analyser> analyser_;
+  std::vector<float> vizBuf_;
+  std::string vizTarget_;
+  int vizRate_ = 0;
+  uint64_t vizSamples_ = 0;
 
   std::mutex artMu_;
   pwvideo::SurfacePtr art_;

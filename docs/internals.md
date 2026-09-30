@@ -12,6 +12,9 @@
 | --- | --- | --- |
 | MPRIS 采样线程 | 通过常驻 D-Bus 连接读取一次 `GetAll`，产出 `NowPlaying` 快照 | 播放中每 500ms，停止播放后放宽到 2000ms |
 | 封面线程 | 仅在曲目变化时通过子模块的 `AssetCache` 抓取并解码封面 | 换歌触发 |
+| 频谱音频循环（仅 `--viz 1`） | 自建的 PipeWire thread loop：抓音频 + 250ms 定时器 | 图周期驱动 |
+
+频谱的 FFT **不开线程**：它被拉进 `provider` 回调里，每渲染帧跑一次。理由与开销见下文「频谱环」。
 
 数据在各模块之间的流转：
 
@@ -19,7 +22,7 @@
 | --- | --- | --- |
 | `mpris` | 播放器的 MPRIS 接口（D-Bus） | `NowPlaying` 快照 |
 | 子模块 `extras/assetcache` | 封面 URL | cairo 表面（LRU 最多 3 张） |
-| `card` | 快照 + 封面表面 | BGRA 帧（预乘 alpha） |
+| `card` | 快照 + 封面表面 + 频谱频段 | BGRA 帧（预乘 alpha） |
 | `pwvideo`（子模块） | BGRA 帧 | `Stream/Output/Video` 节点，供 OBS 消费 |
 
 **关键约束**：`process` 回调内只做渲染与拷贝，绝不进行网络访问 —— 这条现在是库对调用方的契约，写在 `lib/pw-video-simple-interface/src/pwvideo.hpp` 里。封面由后台线程准备完成后挂到 `art_`（`shared_ptr` + 互斥锁），渲染时只取一次引用。
@@ -80,6 +83,149 @@ lo = (((a & 0x00FF00FF) * iw + (b & 0x00FF00FF) * w) >> 8) & 0x00FF00FF;  // R +
 hi = ((((a >> 8) & 0x00FF00FF) * iw + ((b >> 8) & 0x00FF00FF) * w) >> 8) & 0x00FF00FF;  // G + A
 return lo | (hi << 8);
 ```
+
+## 频谱环（--viz）
+
+柱状频谱环绕封面，默认关闭。关闭时**不改变任何版式**（见下文回归验证）；开启时从 MPRIS 得到的播放器名出发，去 PipeWire 里找到该应用的音频节点，接 monitor 抓**原始流**做 FFT。
+
+| 组件 | 输入 | 输出 |
+| --- | --- | --- |
+| `mpris` | —— | `NowPlaying::player`，即 MPRIS 总线名后缀（`musicfox`） |
+| `audio` | 播放器名 | 单声道 float 采样块（图自身采样率） |
+| `analyser` | 单声道采样 | 72 段频段电平（0..1） |
+| `card` | 频段电平 | 封面周围的一圈径向柱子 |
+
+### 为什么 FFT 不单独开线程
+
+一开始的设想是「抓取线程 + 分析线程 + 频谱发布」。实测后取消了：**频谱只在渲染那一帧里算一次**，用渲染路径上现成的 `provider` 回调。
+
+- 没有消费者 → 没有帧 → **不分析**，与本项目「0 帧 = 0 开销」的原则一致；
+- 不需要锁、不需要 seqlock、不需要第三块缓冲；
+- 频谱的采样率**恰好等于显示率**，不存在「算出来的是 200ms 前那一帧」的滞后；
+- 实测 0.0175 ms/帧 @2048 点 / 48kHz，占单核 0.053%（见下表）。
+
+代价是：消费者把帧率协商得很低时，每次 `feed()` 要追更多窗口。这一点由 `kMaxTransformsPerFeed` 封顶，且超限后**丢弃积压**而不是回放——否则调用方一次交一大块数据时会永久落后，显示的频谱越拖越旧。
+
+### 从播放器名到节点：只能靠 registry 匹配
+
+PipeWire 没有「MPRIS 名 ↔ 节点」的 API，只能枚举 registry 后匹配。注册表事件自带全部属性，**不需要**为每个节点 bind 一个 proxy 去读。
+
+`AudioTap::findTarget()` 的规则，按可信度从强到弱检查 `application.id`、`application.name`、`media.name`、`node.description`、`node.name`，要求**整词、不分大小写**命中（`musicfox` 命中 `alsa_playback.musicfox` 与 `PipeWire ALSA [musicfox]`，但不命中 `musicfoxd`）。MPRIS 总线名可能带实例后缀（`firefox.instance12`），完整名优先，不中再退到点号前的部分。
+
+候选按 `media.class` 打分而非过滤，这样只暴露 sink 的播放器也认得出来：
+
+| class | 分 | 理由 |
+| --- | --- | --- |
+| `Stream/Output/Audio` | 3 | 播放器自己的输出流，monitor 到的就是信号本身 |
+| `Audio/Sink` | 2 | 播放器的 sink |
+| `Stream/Input/Audio` | 1 | 播放器在录音 |
+
+定位：
+
+```bash
+# 播放器名对应哪些节点、谁分最高
+pw-dump | python3 -c "import json,sys;[print(o['id'],(o.get('info') or {}).get('props',{}).get('media.class'),
+  (o.get('info') or {}).get('props',{}).get('node.name'),
+  (o.get('info') or {}).get('props',{}).get('application.name')) for o in json.load(sys.stdin)]" | grep musicfox
+```
+
+匹配不上时 stdout 打一行提示，环里只留底圈，不会静默空白。
+
+### 抓的是 monitor，不是音源
+
+播放器的 `Stream/Output/Audio` 节点没有第三方可读的端口。做法是：把输入流的 `target.object` 指向该节点的 `object.serial`（退回 `node.name`），**PipeWire 会自己建（或复用）该节点的 monitor 端口并连线**。拿到的就是播放器送出的信号，在任何设备混音、音量、效果之前。
+
+这条路**不会给音频路径加延时**：自 0.3.71 起 monitor 流不计入对端端口的延时计算。
+
+### 格式协商里那个静默失败的坑
+
+采样率必须用 `SPA_POD_CHOICE_RANGE_Int` 写范围。写成这样：
+
+```c
+// 看着像「这几个采样率都行」，实际是静默致命
+spa_pod_builder_add(&b, SPA_FORMAT_AUDIO_rate, SPA_POD_CHOICE_FLAGS_Int(0x7|0x8|0x10|0x20|0x40), 0);
+```
+
+`SPA_POD_CHOICE_FLAGS_Int` 是给**位掩码**用的（只有 value，没有 default/min/max）。这样交上去的结果是流停在 `PW_STREAM_STATE_UNCONNECTED`（2），**没有 `format` 事件、没有 `process` 回调、不打任何日志**——和上文视频节点那一节的失败方式同一个套路。改成
+
+```c
+spa_pod_builder_add(&b, SPA_FORMAT_AUDIO_rate, SPA_POD_CHOICE_RANGE_Int(48000, 8000, 192000), 0);
+```
+
+立刻 `connecting → unconnected → paused → streaming`，本机协商到 48 kHz / 2ch / `format=283`（`SPA_AUDIO_FORMAT_F32_LE`，交错）。
+
+另外两点实测结论：
+
+- **请求的采样率不作数**。`pw-record --rate 44100` 拿到的图仍是 48 kHz，所以频段划分必须读 `SPA_PARAM_Format` 里协商回来的值，不能用自己请求的那个。
+- **必须加 `PW_STREAM_FLAG_MAP_BUFFERS`**，否则 `datas[].data` 不可用。
+- 交错与平面两种排布都实现读取：交错是一个 plane、stride 为整帧；平面是每声道一个 plane。本机协商到的是交错，但图有权选平面。
+
+### 分析：窗口、频段划分与定标
+
+- **Hann 窗**。矩形窗的主瓣宽 4 个 bin，会把频段边界糊成斜坡、相邻柱子看着像一条。不加窗的代价是 0，所以没有理由省。
+- **2048 点 / hop = 512**。48 kHz 下是 42.7 ms 窗、23.4 Hz/bin。hop 取窗长的 1/4，所以**每秒总变换量只与 log₂N 成正比**——窗变长几乎不涨开销（实测 N=512/1024/2048 每帧都是 0.017 ms）。
+- **频段划分：底部线性 + 其余对数**。纯对数划分在 40 Hz 处每个频段只有 3 Hz，任何够短的窗都分辨不出来，头十几根柱会重复同一个 bin。底部 1/6 改线性（45→300 Hz）后每段约等于一个 bin。高频段用对数，否则上半圈全是空的。
+- **折叠用 RMS** 而不是取最大值。取最大值会让同一根弦的两个 bin 每帧轮换，显示结果是抖的。
+- 电平按 `A = 4·|X[k]|/N` 换算（Hann 相干增益恰为 0.5），得到可解释的 dBFS。
+
+定标窗口 `-85 .. -30 dBFS` 是**量出来的**，不是猜的。25 秒实机播放（48 kHz / 72 段 / 2048 点）：
+
+| 分位 | p05 | p25 | p50 | p75 | p90 | p99 | max |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 频段电平 dBFS | -96.8 | -79.1 | -68.3 | -58.1 | -50.5 | -35.2 | -27.9 |
+
+（同期宽带 RMS：p05 -40.2 / p50 -35.4 / p95 -32.5 dBFS。）
+下限高于 -85，上半圈会空；上限接近 -20，低音会全部顶死。
+
+**这里没有任何电平后处理**：没有门限、没有 AGC、没有峰值保持、没有幅度平滑。抓到的已经是原始流，再加一道就会画出音乐本身没有的频谱。唯一的映射是上面这个**固定**的 dB 窗口——它不看素材，所以柱子高度在曲目之间可比、与实际播放量成正比。（滚动最大值会让安静的段落也顶满一圈，那正是把素材归一化掉了。）
+
+标定复现：
+
+```bash
+./pw-mpris-visualcard-native --viz 1 --dump /tmp/x.png     # 环本身就是定标的可视化
+```
+
+### 渲染：批量填充反而更慢
+
+两处直觉都写错了，都是先写微基准才发现的（72 根柱）：
+
+| 做法 | 耗时 | 结论 |
+| --- | --- | --- |
+| 每根柱子单独 `fill` | 0.25 ms | **用这个** |
+| 全部柱子拼成一条 path 再 `fill` 一次 | 0.34 ms | 慢 1.4 倍 |
+| 柱边用 4 次 `line_to`（弦） | 0.24 ms | **用这个** |
+| 柱边用 2 次 `cairo_arc`（弧） | 0.29 ms | 慢 1.2 倍 |
+
+拼成一条 path 之所以更慢：cairo 会把整条复合路径**当成一个整体**做细分，而每个 4 边形自己细分几乎免费。
+
+弦 vs 弧：半径与槽宽下，弧与弦的偏差不到一个像素的几分之一，视觉上看不出来。
+
+整体开销（460x690，歌词 4 行 + 时间 + 专辑名，含封面旋转）：
+
+| | ms/帧 | 占单核 @30fps |
+| --- | --- | --- |
+| `--viz 0` | 0.89 | — |
+| `--viz 1`（72 柱，含绘制） | 0.99 | +0.30% |
+| FFT（2048 点，喂一帧 1600 样本） | 0.0175 | 0.053% |
+| 合计增量 | ~0.11 | **~0.33%** |
+
+### 旋转
+
+柱子环与封面**反向**、且慢 4 倍（`kVizSpinRatio`），一整圈 `spinSeconds × 4` 秒。反向同速会读成互相追赶，慢下来才读成两个独立的运动。`--spin 0` 时两者都停。
+
+### 回归验证：`--viz` 关闭必须逐字节一致
+
+「关闭时不影响现在的版式」不能靠肉眼看。用一个夹具把同一份 `NowPlaying` 灌进改造前后的 `Card`，比对输出帧的 FNV-1a：
+
+```text
+IDENTICAL  args=''               bg='none'    hash=6e8a4b660fcddee3
+IDENTICAL  args='lyrics'          bg='none'    hash=5deb49a11126b819
+IDENTICAL  args='time'            bg='none'    hash=f1912e6ac5f126e2
+IDENTICAL  args='lyrics time album' bg='solid' hash=c58ab485961abab2
+... 10 组配置全部一致
+```
+
+覆盖「有/无歌词 × 有/无时间 × 有/无专辑 × 两种背景」。夹具不属于构建，改版面时照这个做法跑一遍。
 
 ## 调试方法
 
