@@ -7,7 +7,12 @@ UNIT_DIR="${HOME}/.config/systemd/user"
 
 echo "==> Installing pw-mpris-visualcard to ${BIN_DIR}..."
 install -d "${BIN_DIR}"
-install -m 755 pw-mpris-visualcard "${BIN_DIR}/pw-mpris-visualcard"
+BIN_SRC="pw-mpris-visualcard"
+if [[ ! -f "$BIN_SRC" && -f "pw-mpris-visualcard-native" ]]; then
+  BIN_SRC="pw-mpris-visualcard-native"
+fi
+
+install -m 755 "${BIN_SRC}" "${BIN_DIR}/pw-mpris-visualcard"
 
 if [[ -f pw-mpris-visualcard.service ]]; then
   echo "==> Installing systemd user unit to ${UNIT_DIR}..."
