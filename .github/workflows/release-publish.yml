@@ -1,37 +1,30 @@
-name: CI & Release
+name: Package & Release
 
 on:
   push:
     branches: [main, master]
     tags: ['v*']
-  pull_request:
-    branches: [main, master]
   workflow_dispatch:
     inputs:
-      mode:
-        description: 'Build & Release Mode'
-        type: choice
-        options:
-          - auto
-          - artifact
-          - release
-          - test-only
-        default: auto
+      publish:
+        description: 'Publish GitHub Release (true) or only upload artifacts (false)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  prepare:
+  check-trigger:
     name: Check Trigger & Version
     runs-on: ubuntu-latest
     outputs:
-      should_artifact: ${{ steps.eval.outputs.should_artifact }}
-      should_release: ${{ steps.eval.outputs.should_release }}
+      should_build: ${{ steps.eval.outputs.should_build }}
+      should_publish: ${{ steps.eval.outputs.should_publish }}
       version: ${{ steps.eval.outputs.version }}
       deb_version: ${{ steps.eval.outputs.deb_version }}
       tag_name: ${{ steps.eval.outputs.tag_name }}
@@ -45,7 +38,7 @@ jobs:
         shell: bash
         env:
           COMMIT_MSG: ${{ github.event.head_commit.message }}
-          INPUT_MODE: ${{ inputs.mode || 'auto' }}
+          MANUAL_PUBLISH: ${{ inputs.publish || false }}
           EVENT_NAME: ${{ github.event_name }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
@@ -67,46 +60,41 @@ jobs:
             TAG_NAME="v0.1.0-${SHORT_SHA}"
           fi
 
-          SHOULD_ARTIFACT="false"
-          SHOULD_RELEASE="false"
+          SHOULD_BUILD="false"
+          SHOULD_PUBLISH="false"
 
-          if [[ "$INPUT_MODE" == "release" ]]; then
-            SHOULD_ARTIFACT="true"
-            SHOULD_RELEASE="true"
-          elif [[ "$INPUT_MODE" == "artifact" ]]; then
-            SHOULD_ARTIFACT="true"
-            SHOULD_RELEASE="false"
-          elif [[ "$INPUT_MODE" == "test-only" ]]; then
-            SHOULD_ARTIFACT="false"
-            SHOULD_RELEASE="false"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            SHOULD_BUILD="true"
+            SHOULD_PUBLISH="$MANUAL_PUBLISH"
           elif [[ "$REF_TYPE" == "tag" ]]; then
-            SHOULD_ARTIFACT="true"
-            SHOULD_RELEASE="true"
+            SHOULD_BUILD="true"
+            SHOULD_PUBLISH="true"
           elif [[ "$COMMIT_MSG" =~ \[(build-)?release\] ]]; then
-            SHOULD_ARTIFACT="true"
+            SHOULD_BUILD="true"
             if [[ "$EVENT_NAME" == "push" && ("$REF_NAME" == "main" || "$REF_NAME" == "master") ]]; then
-              SHOULD_RELEASE="true"
+              SHOULD_PUBLISH="true"
             fi
           elif [[ "$COMMIT_MSG" =~ \[(build-)?artifact\] ]]; then
-            SHOULD_ARTIFACT="true"
-            SHOULD_RELEASE="false"
+            SHOULD_BUILD="true"
+            SHOULD_PUBLISH="false"
           fi
 
+          echo "should_build=${SHOULD_BUILD}" >> "$GITHUB_OUTPUT"
+          echo "should_publish=${SHOULD_PUBLISH}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "deb_version=${DEB_VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
-          echo "should_artifact=${SHOULD_ARTIFACT}" >> "$GITHUB_OUTPUT"
-          echo "should_release=${SHOULD_RELEASE}" >> "$GITHUB_OUTPUT"
 
-          echo "Trigger evaluation result:"
+          echo "Trigger evaluation:"
+          echo "  should_build: $SHOULD_BUILD"
+          echo "  should_publish: $SHOULD_PUBLISH"
           echo "  version: $VERSION"
           echo "  tag_name: $TAG_NAME"
-          echo "  should_artifact: $SHOULD_ARTIFACT"
-          echo "  should_release: $SHOULD_RELEASE"
 
-  build-and-test:
-    name: Build & Test (${{ matrix.arch }})
-    needs: prepare
+  build-and-package:
+    name: Package (${{ matrix.arch }})
+    needs: check-trigger
+    if: needs.check-trigger.outputs.should_build == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -153,10 +141,9 @@ jobs:
           echo "Smoke test passed successfully! Generated $(wc -c < /tmp/smoke_test.png) bytes PNG."
 
       - name: Package artifacts
-        if: needs.prepare.outputs.should_artifact == 'true' || needs.prepare.outputs.should_release == 'true'
         env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-          DEB_VERSION: ${{ needs.prepare.outputs.deb_version }}
+          VERSION: ${{ needs.check-trigger.outputs.version }}
+          DEB_VERSION: ${{ needs.check-trigger.outputs.deb_version }}
           ARCH: ${{ matrix.arch }}
           DEB_ARCH: ${{ matrix.deb_arch }}
         run: |
@@ -207,17 +194,16 @@ jobs:
           dpkg-deb --build "dist/${DEB_PKG}" "dist/packages/${DEB_PKG}.deb"
 
       - name: Upload Build Artifacts
-        if: needs.prepare.outputs.should_artifact == 'true' || needs.prepare.outputs.should_release == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: packages-${{ matrix.arch }}
           path: dist/packages/*
           if-no-files-found: error
 
-  release:
+  publish-release:
     name: Publish GitHub Release
-    needs: [prepare, build-and-test]
-    if: needs.prepare.outputs.should_release == 'true'
+    needs: [check-trigger, build-and-package]
+    if: needs.check-trigger.outputs.should_publish == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -239,8 +225,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.prepare.outputs.tag_name }}
-          name: Release ${{ needs.prepare.outputs.version }}
+          tag_name: ${{ needs.check-trigger.outputs.tag_name }}
+          name: Release ${{ needs.check-trigger.outputs.version }}
           draft: false
           prerelease: false
           files: release-assets/*
