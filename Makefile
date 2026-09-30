@@ -1,8 +1,14 @@
 # pw-mpris-visualcard / native -- single-process C++ renderer
 # All dependencies are distribution system libraries; no third-party package manager involved.
 
-CXX      ?= g++
-PKGS     := cairo pangocairo libpipewire-0.3 sdbus-c++ libcurl gdk-pixbuf-2.0 glib-2.0
+# Autodetect sdbus-c++ / sdbus-cpp pkg-config name across different distributions
+SDBUS_PKG ?= $(shell pkg-config --exists sdbus-c++ && echo sdbus-c++ || echo sdbus-cpp)
+PKGS      := cairo pangocairo libpipewire-0.3 $(SDBUS_PKG) libcurl gdk-pixbuf-2.0 glib-2.0
+
+MISSING_PKGS := $(foreach pkg,$(PKGS),$(if $(shell pkg-config --exists $(pkg) && echo 1),,$(pkg)))
+ifneq ($(strip $(MISSING_PKGS)),)
+$(error Missing required pkg-config dependencies: $(MISSING_PKGS))
+endif
 # -O3 -march=native pays off clearly on the rotation hot loop (measured -22% per frame).
 # The cost is a binary bound to the local instruction set; to run elsewhere or distribute it,
 # use make PORTABLE=1.
