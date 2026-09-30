@@ -55,8 +55,6 @@ RestartSec=2
 # Outputs video to PipeWire only; no additional capabilities are required
 NoNewPrivileges=yes
 PrivateTmp=no
-ProtectSystem=strict
-ProtectHome=read-only
 
 [Install]
 WantedBy=default.target
