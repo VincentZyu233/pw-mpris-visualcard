@@ -9,6 +9,11 @@ MISSING_PKGS := $(foreach pkg,$(PKGS),$(if $(shell pkg-config --exists $(pkg) &&
 ifneq ($(strip $(MISSING_PKGS)),)
 $(error Missing required pkg-config dependencies: $(MISSING_PKGS))
 endif
+
+SDBUS_MAJOR := $(shell pkg-config --modversion $(SDBUS_PKG) 2>/dev/null | cut -d. -f1)
+ifneq ($(SDBUS_MAJOR),)
+  EXTRA_CXXFLAGS += -DSDBUS_CPP_MAJOR=$(SDBUS_MAJOR)
+endif
 # -O3 -march=native pays off clearly on the rotation hot loop (measured -22% per frame).
 # The cost is a binary bound to the local instruction set; to run elsewhere or distribute it,
 # use make PORTABLE=1.
